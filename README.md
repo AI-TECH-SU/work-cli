@@ -43,10 +43,13 @@ Use an editable installation inside a project virtual environment:
 
 ```console
 cd /path/to/work-cli
-python3 -m venv .venv
+./scripts/setup-dev.sh
 source .venv/bin/activate
-python -m pip install -e .
 ```
+
+The setup script creates `.venv` when needed and installs this repository in
+editable mode. Set `PYTHON` to use a specific interpreter, for example
+`PYTHON=python3.13 ./scripts/setup-dev.sh`.
 
 Confirm that the active command comes from the virtual environment:
 
@@ -196,14 +199,29 @@ source .venv/bin/activate
 ### Automated checks
 
 ```console
-python -m unittest discover -s tests -v
-python -m compileall -q src tests scripts
+./scripts/check.sh
 ```
+
+This runs the unit tests, byte-compiles the Python sources, checks Git diffs for
+whitespace errors, and runs the isolated CLI smoke test. It prefers the virtual
+environment's Python and falls back to `python3`; set `PYTHON` to override it.
 
 ### Isolated manual testing
 
-Point the XDG configuration and state directories at a disposable location so
-manual tests cannot modify real projects under `~/.config/work`:
+Run the repeatable smoke test without touching real Work configuration, creating
+a tmux session, or opening applications:
+
+```console
+./scripts/smoke-test.sh
+```
+
+The script creates temporary XDG directories, supplies inert stand-ins for
+external commands, exercises initialization and inspection, and removes the
+temporary files when it exits.
+
+For exploratory testing, point the XDG configuration and state directories at a
+disposable location so manual tests cannot modify real projects under
+`~/.config/work`:
 
 ```console
 export XDG_CONFIG_HOME="/tmp/work-cli-dev/config"
