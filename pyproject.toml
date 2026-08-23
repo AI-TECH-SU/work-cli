@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "local-workspace-manager"
+version = "0.1.0"
+description = "Local-first macOS project workspace manager"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "AI-TECH-SU" }]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/AI-TECH-SU/work-cli"
+Repository = "https://github.com/AI-TECH-SU/work-cli"
+Issues = "https://github.com/AI-TECH-SU/work-cli/issues"
+
+[project.scripts]
+work = "workspace_manager.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

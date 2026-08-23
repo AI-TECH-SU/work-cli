@@ -1,0 +1,22 @@
+class Work < Formula
+  include Language::Python::Virtualenv
+
+  desc "Local-first macOS project workspace manager"
+  homepage "@HOMEPAGE@"
+  url "@URL@"
+  sha256 "@SHA256@"
+  version "@VERSION@"
+  license "MIT"
+
+  depends_on :macos
+  depends_on "python@3.13"
+  depends_on "tmux"
+
+  def install
+    virtualenv_install_with_resources
+  end
+
+  test do
+    assert_match "work #{version}", shell_output("#{bin}/work --version")
+  end
+end
