@@ -39,27 +39,28 @@ For v1, select the desired desktop, open Terminal, and run `work <project>`.
 
 ## Install for development
 
-From this repository:
+Use an editable installation inside a project virtual environment:
 
 ```console
-python3 -m pip install --user -e .
+cd /path/to/work-cli
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
 ```
 
-Or, if `pipx` is installed:
+Confirm that the active command comes from the virtual environment:
 
 ```console
-pipx install -e .
-```
-
-Verify the installation:
-
-```console
+which work
 work --version
-work doctor
 ```
 
-If this is a source or pipx installation and tmux is missing, let `work` repair
-that dependency through Homebrew:
+`which work` should resolve to `.venv/bin/work`. Because the installation is
+editable, changes under `src/workspace_manager/` take effect immediately.
+Reinstall only after changing packaging metadata or entry points in
+`pyproject.toml`.
+
+If tmux is missing, let `work` repair that system dependency through Homebrew:
 
 ```console
 work doctor --fix
@@ -185,7 +186,82 @@ file structure, and future boundaries.
 
 ## Development
 
+Activate the project virtual environment before running any development
+command:
+
 ```console
-python3 -m unittest discover -s tests -v
-python3 -m compileall -q src tests
+source .venv/bin/activate
+```
+
+### Automated checks
+
+```console
+python -m unittest discover -s tests -v
+python -m compileall -q src tests scripts
+```
+
+### Isolated manual testing
+
+Point the XDG configuration and state directories at a disposable location so
+manual tests cannot modify real projects under `~/.config/work`:
+
+```console
+export XDG_CONFIG_HOME="/tmp/work-cli-dev/config"
+export XDG_STATE_HOME="/tmp/work-cli-dev/state"
+```
+
+Create or replace an isolated project configuration for this repository:
+
+```console
+work init work-cli-dev \
+  --root "$PWD" \
+  --non-interactive \
+  --force
+```
+
+Inspect the configured behavior without creating a tmux session or opening GUI
+applications:
+
+```console
+work list
+work work-cli-dev --dry-run
+work status work-cli-dev --json
+```
+
+### Real integration test
+
+Validate the local requirements and install tmux through Homebrew if needed:
+
+```console
+work doctor
+work doctor --fix
+```
+
+Then exercise the complete project-owned lifecycle:
+
+```console
+work work-cli-dev --no-attach
+work status work-cli-dev
+work stop work-cli-dev
+```
+
+The non-interactive configuration leaves Chrome disabled. The real boot test
+creates a tmux session and opens this repository in VS Code. `work stop` removes
+only the project-owned tmux session and intentionally leaves VS Code open.
+
+### Homebrew release testing
+
+Do not use the Homebrew package as the daily development installation. The
+editable virtual environment is the live development command; Homebrew should
+test only an immutable tagged release and its rendered formula. Before running
+tests, use `which work` to confirm whether the shell resolves the editable or
+Homebrew-installed executable.
+
+See [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md) for release archive and formula
+testing.
+
+When finished, leave the environment with:
+
+```console
+deactivate
 ```
