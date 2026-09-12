@@ -24,6 +24,21 @@ fi
 
 "$venv_dir/bin/python" -m pip install --editable "$repo_root"
 
+completion_dir=""
+if command -v brew >/dev/null 2>&1; then
+  completion_dir="$(brew --prefix)/share/zsh/site-functions"
+elif [[ -d /usr/local/share/zsh/site-functions ]]; then
+  completion_dir="/usr/local/share/zsh/site-functions"
+fi
+
+if [[ -n "$completion_dir" && -w "$(dirname "$completion_dir")" ]]; then
+  mkdir -p "$completion_dir"
+  ln -sfn "$repo_root/completions/_work" "$completion_dir/_work"
+  printf 'installed zsh completion: %s\n' "$completion_dir/_work"
+else
+  printf 'info: zsh completion was not installed; no writable site-functions directory found\n'
+fi
+
 printf '\nDevelopment environment is ready.\n'
 printf 'Activate it with: source %q\n' "$venv_dir/bin/activate"
 printf 'Run checks with:  %q\n' "$repo_root/scripts/check.sh"

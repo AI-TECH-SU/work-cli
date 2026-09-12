@@ -58,6 +58,22 @@ which work
 work --version
 ```
 
+The setup script also installs Work's packaged zsh completion into Homebrew's
+standard `site-functions` directory when it is writable. Zsh loads packaged
+completions after its generic completion system has been initialized:
+
+```zsh
+autoload -Uz compinit
+compinit
+```
+
+After opening a new shell, project names and commands complete with Tab:
+
+```console
+work wellprept-fo<Tab>
+work stop wellprept-fo<Tab>
+```
+
 `which work` should resolve to `.venv/bin/work`. Because the installation is
 editable, changes under `src/workspace_manager/` take effect immediately.
 Reinstall only after changing packaging metadata or entry points in
