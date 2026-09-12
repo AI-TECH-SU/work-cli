@@ -12,8 +12,16 @@ class CommandConfig:
 
 
 @dataclass(frozen=True)
+class TmuxWindowConfig:
+    name: str
+    root: Path
+    command: str | None = None
+
+
+@dataclass(frozen=True)
 class TmuxConfig:
     session: str
+    windows: tuple[TmuxWindowConfig, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)

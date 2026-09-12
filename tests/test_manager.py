@@ -15,6 +15,7 @@ from workspace_manager.models import (
     ProjectConfig,
     StartupConfig,
     TmuxConfig,
+    TmuxWindowConfig,
     VSCodeConfig,
 )
 
@@ -119,6 +120,88 @@ class ManagerTests(unittest.TestCase):
         manager.reconcile(self.project)
 
         self.assertFalse((Path(os.environ["XDG_STATE_HOME"]) / "work").exists())
+
+    def test_fresh_boot_creates_configured_tmux_windows_in_their_roots(self) -> None:
+        api = self.project.root / "api"
+        web = self.project.root / "web"
+        api.mkdir()
+        web.mkdir()
+        project = ProjectConfig(
+            name=self.project.name,
+            root=self.project.root,
+            tmux=TmuxConfig(
+                session="work-demo",
+                windows=(
+                    TmuxWindowConfig("api", api),
+                    TmuxWindowConfig("web", web, "npm run dev"),
+                ),
+            ),
+            vscode=self.project.vscode,
+            chrome=self.project.chrome,
+            context=self.project.context,
+            startup=StartupConfig(),
+            source=self.project.source,
+        )
+        runner = FakeRunner()
+        manager = WorkspaceManager(
+            self.commands, runner, validate_executables=False  # type: ignore[arg-type]
+        )
+
+        manager.reconcile(project)
+
+        self.assertEqual(
+            runner.mutations[0][0:9],
+            ("tmux", "new-session", "-d", "-s", "work-demo", "-n", "api", "-c", str(api)),
+        )
+        self.assertIn(
+            (
+                "tmux",
+                "new-window",
+                "-d",
+                "-t",
+                "work-demo",
+                "-n",
+                "web",
+                "-c",
+                str(web),
+                os.environ.get("SHELL", "/bin/zsh"),
+                "-lc",
+                "exec npm run dev",
+            ),
+            runner.mutations,
+        )
+
+    def test_existing_session_repairs_only_missing_tmux_windows(self) -> None:
+        api = self.project.root / "api"
+        web = self.project.root / "web"
+        api.mkdir()
+        web.mkdir()
+        project = ProjectConfig(
+            name=self.project.name,
+            root=self.project.root,
+            tmux=TmuxConfig(
+                session="work-demo",
+                windows=(TmuxWindowConfig("api", api), TmuxWindowConfig("web", web)),
+            ),
+            vscode=VSCodeConfig(False),
+            chrome=ChromeConfig(False),
+            context=ContextConfig(None, False),
+            startup=StartupConfig(),
+            source=self.project.source,
+        )
+        responses = {
+            ("tmux", "has-session", "-t", "work-demo"): (0, ""),
+            ("tmux", "list-windows", "-t", "work-demo", "-F", "#{window_name}"): (0, "api\n"),
+        }
+        runner = FakeRunner(responses)
+        manager = WorkspaceManager(
+            self.commands, runner, validate_executables=False  # type: ignore[arg-type]
+        )
+
+        manager.reconcile(project)
+
+        self.assertEqual(len(runner.mutations), 1)
+        self.assertEqual(runner.mutations[0][6], "web")
 
 
 if __name__ == "__main__":

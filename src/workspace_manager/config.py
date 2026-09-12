@@ -15,6 +15,7 @@ from workspace_manager.models import (
     ProjectConfig,
     StartupConfig,
     TmuxConfig,
+    TmuxWindowConfig,
     VSCodeConfig,
 )
 from workspace_manager.paths import global_config_path, project_config_path, projects_dir
@@ -93,6 +94,34 @@ def _boolean(table: dict[str, Any], key: str, default: bool) -> bool:
     return value
 
 
+def _tmux_windows(tmux: dict[str, Any], root: Path) -> tuple[TmuxWindowConfig, ...]:
+    value = tmux.get("windows", [])
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise WorkError("tmux.windows must be an array of tables")
+
+    windows: list[TmuxWindowConfig] = []
+    names: set[str] = set()
+    for item in value:
+        name = _string(item, "name")
+        if name is None:
+            raise WorkError("each tmux window requires a non-empty name")
+        if any(character in name for character in ".:"):
+            raise WorkError("tmux window names cannot contain '.' or ':'")
+        if name in names:
+            raise WorkError(f"duplicate tmux window name: {name!r}")
+        names.add(name)
+
+        window_root = _resolve(root, _string(item, "root", ".")) or root
+        windows.append(
+            TmuxWindowConfig(
+                name=name,
+                root=window_root,
+                command=_string(item, "command"),
+            )
+        )
+    return tuple(windows)
+
+
 def _resolve(root: Path, value: str | None) -> Path | None:
     if value is None:
         return None
@@ -144,6 +173,7 @@ def load_project(name: str) -> ProjectConfig:
     session = _string(tmux, "session", f"work-{name}") or f"work-{name}"
     if any(character in session for character in ".:"):
         raise WorkError("tmux.session cannot contain '.' or ':'")
+    tmux_windows = _tmux_windows(tmux, root)
 
     workspace = _resolve(root, _string(vscode, "workspace"))
     context_path = _resolve(root, _string(context, "path", "PROJECT.md"))
@@ -159,7 +189,7 @@ def load_project(name: str) -> ProjectConfig:
     return ProjectConfig(
         name=name,
         root=root,
-        tmux=TmuxConfig(session=session),
+        tmux=TmuxConfig(session=session, windows=tmux_windows),
         vscode=VSCodeConfig(
             enabled=_boolean(vscode, "enabled", True),
             workspace=workspace or root,

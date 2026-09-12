@@ -76,6 +76,51 @@ urls = ["file:///etc/passwd"]
         with self.assertRaisesRegex(WorkError, "unsupported Chrome URL"):
             load_project("demo")
 
+    def test_tmux_windows_resolve_roots_and_commands(self) -> None:
+        api = self.project_root / "api"
+        web = self.project_root / "web"
+        api.mkdir()
+        web.mkdir()
+        self.write_project(
+            f'''version = 1
+root = "{self.project_root}"
+
+[tmux]
+session = "work-demo"
+
+[[tmux.windows]]
+name = "api"
+root = "api"
+command = "php artisan serve"
+
+[[tmux.windows]]
+name = "web"
+root = "web"
+'''
+        )
+
+        config = load_project("demo")
+
+        self.assertEqual([window.name for window in config.tmux.windows], ["api", "web"])
+        self.assertEqual(config.tmux.windows[0].root, api.resolve())
+        self.assertEqual(config.tmux.windows[0].command, "php artisan serve")
+        self.assertEqual(config.tmux.windows[1].root, web.resolve())
+        self.assertIsNone(config.tmux.windows[1].command)
+
+    def test_duplicate_tmux_window_names_are_rejected(self) -> None:
+        self.write_project(
+            f'''version = 1
+root = "{self.project_root}"
+[tmux]
+[[tmux.windows]]
+name = "api"
+[[tmux.windows]]
+name = "api"
+'''
+        )
+        with self.assertRaisesRegex(WorkError, "duplicate tmux window name"):
+            load_project("demo")
+
     def test_missing_root_is_rejected(self) -> None:
         self.write_project('version = 1\nroot = "/definitely/not/here"\n')
         with self.assertRaisesRegex(WorkError, "project root does not exist"):

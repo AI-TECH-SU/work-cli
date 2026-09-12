@@ -148,6 +148,16 @@ root = "/Users/me/src/projectA"
 [tmux]
 session = "work-projectA"
 
+[[tmux.windows]]
+name = "api"
+root = "services/api"
+command = "python -m api"
+
+[[tmux.windows]]
+name = "web"
+root = "apps/web"
+command = "npm run dev"
+
 [vscode]
 enabled = true
 workspace = "projectA.code-workspace"
@@ -172,6 +182,13 @@ check = "curl -fsS http://localhost:3000 >/dev/null"
 Paths in a project file may be absolute or relative to `root`. The optional
 startup and health-check strings are explicitly user-authored shell commands;
 they run through the user's shell inside the project directory.
+
+When `tmux.windows` is configured, the first entry becomes the session's first
+window and each remaining entry is created independently. Window roots may be
+absolute or relative to the project root. Commands are optional; omit one to
+open an interactive project shell. Missing configured windows are restored on
+the next invocation. The legacy `[startup]` window remains available for a
+single project-wide development command.
 
 Global command overrides live in `~/.config/work/config.toml`:
 

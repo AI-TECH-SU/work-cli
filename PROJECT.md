@@ -18,7 +18,7 @@ project's working context with one command: `work <project>`.
 ## V1 resources
 
 - VS Code workspace/folder and profile
-- tmux session
+- tmux session with optional project-rooted windows
 - Chrome profile and configured URLs
 - project `PROJECT.md`
 - optional development startup command

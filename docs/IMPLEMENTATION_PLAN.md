@@ -61,7 +61,10 @@ Accessibility permissions.
 ## Reconciliation rules
 
 - **tmux:** `tmux has-session` is the authoritative boot check. A missing
-  session is created with a shell window rooted at the project directory.
+  session is created with either the first configured project window or a
+  default shell rooted at the project directory. Each configured window has an
+  independent root and optional command; missing windows are restored without
+  duplicating healthy ones.
 - **startup command:** an optional health check is authoritative when supplied;
   otherwise a live tmux window with the configured name is the marker. A
   missing command is started in a new tmux window.
@@ -79,8 +82,8 @@ Accessibility permissions.
 
 - Subprocesses use argument arrays; no project value is interpolated into an
   implicit shell command.
-- Only the explicitly configured startup and health-check strings run through
-  the user's shell.
+- Only explicitly configured tmux-window, startup, and health-check commands run
+  through the user's shell.
 - Configuration validation rejects unknown versions, invalid project names,
   invalid URLs, missing roots, and malformed value types before launching.
 - `--dry-run` shows mutating external commands.

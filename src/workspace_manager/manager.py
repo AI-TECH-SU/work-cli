@@ -7,7 +7,12 @@ from pathlib import Path
 from typing import Iterator
 
 from workspace_manager.errors import WorkError
-from workspace_manager.models import CommandConfig, ProjectConfig, WorkspaceStatus
+from workspace_manager.models import (
+    CommandConfig,
+    ProjectConfig,
+    TmuxWindowConfig,
+    WorkspaceStatus,
+)
 from workspace_manager.paths import project_lock_path
 from workspace_manager.system import CommandRunner, executable_exists
 
@@ -107,6 +112,8 @@ class WorkspaceManager:
             else:
                 print(f"ok  tmux session {project.tmux.session!r} is running")
 
+            self._reconcile_tmux_windows(project, fresh_boot=fresh_boot)
+
             if project.startup.command:
                 if self.startup_running(project):
                     print(f"ok  startup window {project.startup.window!r} is running")
@@ -150,6 +157,11 @@ class WorkspaceManager:
             return True
 
     def _validate_paths(self, project: ProjectConfig) -> None:
+        for window in project.tmux.windows:
+            if not window.root.is_dir():
+                raise WorkError(
+                    f"tmux window root does not exist or is not a directory: {window.root}"
+                )
         if project.vscode.enabled and project.vscode.workspace and not project.vscode.workspace.exists():
             raise WorkError(f"VS Code workspace does not exist: {project.vscode.workspace}")
         if (
@@ -174,20 +186,75 @@ class WorkspaceManager:
             )
 
     def _create_tmux(self, project: ProjectConfig) -> None:
-        command = (
+        first_window = project.tmux.windows[0] if project.tmux.windows else None
+        command = [
             self.commands.tmux,
             "new-session",
             "-d",
             "-s",
             project.tmux.session,
             "-n",
-            "shell",
+            first_window.name if first_window else "shell",
             "-c",
-            str(project.root),
-        )
+            str(first_window.root if first_window else project.root),
+        ]
+        if first_window and first_window.command:
+            command.extend(self._tmux_shell_command(first_window.command))
         if self.runner.mutate(command) != 0:
             raise WorkError(f"tmux failed to create session {project.tmux.session!r}")
         print(f"ok  created tmux session {project.tmux.session!r}")
+
+    def _reconcile_tmux_windows(self, project: ProjectConfig, *, fresh_boot: bool) -> None:
+        if not project.tmux.windows:
+            return
+        existing = (
+            {project.tmux.windows[0].name}
+            if fresh_boot
+            else self._tmux_window_names(project)
+        )
+        for window in project.tmux.windows:
+            if window.name in existing:
+                print(f"ok  tmux window {window.name!r} is running")
+                continue
+            self._create_tmux_window(project, window)
+
+    def _tmux_window_names(self, project: ProjectConfig) -> set[str]:
+        result = self.runner.capture(
+            (
+                self.commands.tmux,
+                "list-windows",
+                "-t",
+                project.tmux.session,
+                "-F",
+                "#{window_name}",
+            )
+        )
+        if result.returncode != 0:
+            raise WorkError(f"tmux failed to inspect session {project.tmux.session!r}")
+        return set(result.stdout.splitlines())
+
+    def _create_tmux_window(self, project: ProjectConfig, window: TmuxWindowConfig) -> None:
+        command = [
+            self.commands.tmux,
+            "new-window",
+            "-d",
+            "-t",
+            project.tmux.session,
+            "-n",
+            window.name,
+            "-c",
+            str(window.root),
+        ]
+        if window.command:
+            command.extend(self._tmux_shell_command(window.command))
+        if self.runner.mutate(command) != 0:
+            raise WorkError(f"tmux failed to create window {window.name!r}")
+        print(f"ok  created tmux window {window.name!r}")
+
+    @staticmethod
+    def _tmux_shell_command(command: str) -> tuple[str, ...]:
+        shell = os.environ.get("SHELL", "/bin/zsh")
+        return (shell, "-lc", f"exec {command}")
 
     def _start_development_command(self, project: ProjectConfig) -> None:
         startup = project.startup
