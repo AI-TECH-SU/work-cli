@@ -1,0 +1,47 @@
+version = 1
+id = "vscode"
+bundle_id = "com.microsoft.VSCode"
+detached = false
+
+[command]
+key = "code"
+name = "code"
+candidates = ["/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code", "/Applications/Visual Studio Code - Insiders.app/Contents/Resources/app/bin/code"]
+
+[inputs.workspace]
+type = "path"
+default = "{root}"
+must_exist = true
+
+[inputs.profile]
+type = "string"
+
+[inputs.context]
+type = "path"
+must_exist = true
+path_kind = "file"
+
+[launch.window]
+argv = ["{command}", "--new-window", {if = "profile", argv = ["--profile", "{profile}"]}, "{workspace}", {if = "context", argv = ["{context}"]}]
+
+[launch.instance]
+argv = ["{command}", "--user-data-dir", "{instance_dir}", "--new-window", {if = "profile", argv = ["--profile", "{profile}"]}, "{workspace}", {if = "context", argv = ["{context}"]}]
+
+[status.window]
+argv = ["{command}", "--status"]
+any_contains = ["{workspace}", "{root}"]
+ignore_case = true
+
+[status.instance]
+argv = ["/bin/ps", "-axo", "command="]
+line_all = ["--user-data-dir", "{instance_dir}", "Code"]
+
+[match]
+kind = "workspace"
+input = "workspace"
+file_suffix = ".code-workspace"
+title_suffix = " (Workspace)"
+title_separator = " — "
+folders_key = "folders"
+folder_path_key = "path"
+jsonc = true

@@ -7,14 +7,18 @@ from pathlib import Path
 from typing import Iterator
 
 from workspace_manager.errors import WorkError
+from workspace_manager.apps import ConfiguredApps
 from workspace_manager.models import (
     CommandConfig,
     ProjectConfig,
     TmuxWindowConfig,
     WorkspaceStatus,
 )
-from workspace_manager.paths import project_lock_path
-from workspace_manager.system import CommandRunner, executable_exists
+from workspace_manager.paths import project_lock_path, state_home
+from workspace_manager.system import CommandRunner, executable_exists, attach_tmux
+from workspace_manager.desktop import DesktopNamesAdapter
+from workspace_manager.terminals import TerminalWindows
+from workspace_manager.windows import ProjectWindows
 
 
 class WorkspaceManager:
@@ -28,6 +32,57 @@ class WorkspaceManager:
         self.commands = commands
         self.runner = runner
         self.validate_executables = validate_executables
+        self.desktop_uuid: str | None = None
+
+    def focus(self, project: ProjectConfig, *, no_attach: bool = False,
+              force_gui: bool = False, restart: bool = False) -> int:
+        lock = nullcontext() if self.runner.dry_run else self.lock(project.name)
+        with lock:
+            desktop = DesktopNamesAdapter(self.commands.desktop_names, self.runner)
+            if project.space.enabled and not restart and not force_gui and desktop.switch_existing(project):
+                return 0
+            if restart:
+                self._validate_paths(project)
+                self._validate_commands(project)
+            if not no_attach and project.tmux.presentation == "windows" and project.tmux.launch_mode == "window":
+                TerminalWindows(self.commands.tmux, self.runner).check_access()
+            if restart:
+                self._stop_services(project, lock_held=True)
+            self.reconcile(project, force_gui=force_gui, assume_stopped=restart and self.runner.dry_run,
+                           lock_held=True)
+            if not no_attach and project.tmux.presentation == "windows":
+                windows = (ProjectWindows(self.commands.desktop_names, self.runner, project, self.desktop_uuid)
+                           if project.space.enabled else None)
+                TerminalWindows(self.commands.tmux, self.runner).open(project, windows=windows)
+                self._return_to_desktop(self.desktop_uuid)
+        if not no_attach and project.tmux.presentation == "current" and not self.runner.dry_run:
+            return attach_tmux(self.commands.tmux, project.tmux.session)
+        return 0
+
+    def stop(self, project: ProjectConfig) -> None:
+        if not project.space.enabled or project.space.target != "project":
+            self._stop_services(project)
+            return
+        lock = nullcontext() if self.runner.dry_run else self.lock(project.name)
+        with lock:
+            desktop = DesktopNamesAdapter(self.commands.desktop_names, self.runner)
+            key = desktop.find(project)
+            if key is None and not self.runner.dry_run:
+                self._stop_services(project, lock_held=True)
+                desktop.binding_path(project).unlink(missing_ok=True)
+                print("ok  project desktop is already absent")
+                return
+            windows = ProjectWindows(self.commands.desktop_names, self.runner, project, key)
+            self._return_to_desktop(key)
+            # Honor editor/browser save prompts before stopping development services.
+            windows.close_on_desktop(terminals=False)
+            self._stop_services(project, lock_held=True)
+            windows.close_on_desktop(terminals=True)
+            windows.require_empty()
+            desktop.remove(project, key or "pending-desktop")
+            if not self.runner.dry_run:
+                windows.path.unlink(missing_ok=True)
+            print(f"ok  stopped {project.name!r}")
 
     @contextmanager
     def lock(self, project: str) -> Iterator[None]:
@@ -37,7 +92,7 @@ class WorkspaceManager:
             try:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as exc:
-                raise WorkError(f"another work operation is active for {project!r}") from exc
+                raise WorkError(f"another Focus operation is active for {project!r}") from exc
             yield
 
     def tmux_running(self, project: ProjectConfig) -> bool:
@@ -68,31 +123,16 @@ class WorkspaceManager:
             line == f"{startup.window}:0" for line in result.stdout.splitlines()
         )
 
-    def vscode_running(self, project: ProjectConfig) -> bool | None:
-        if not project.vscode.enabled:
-            return None
-        result = self.runner.capture((self.commands.code, "--status"))
-        output = (result.stdout + result.stderr).casefold()
-        targets = {str(project.vscode.workspace or project.root), str(project.root)}
-        return result.returncode == 0 and any(target.casefold() in output for target in targets)
-
-    def chrome_running(self, project: ProjectConfig) -> bool | None:
-        if not project.chrome.enabled:
-            return None
-        result = self.runner.capture(("/bin/ps", "-axo", "command="))
-        marker = f"--profile-directory={project.chrome.profile}"
-        executable_name = Path(self.commands.chrome).name
-        return result.returncode == 0 and any(
-            marker in line and executable_name in line for line in result.stdout.splitlines()
-        )
-
     def status(self, project: ProjectConfig) -> WorkspaceStatus:
+        apps = ConfiguredApps(self.commands.desktop_names, self.runner, project, commands=self.commands)
+        states = apps.status()
+        legacy = {resource.app.legacy_slot: states[resource.app.name]
+                  for resource in apps.resources if resource.app.legacy_slot}
         return WorkspaceStatus(
-            project=project.name,
-            tmux=self.tmux_running(project),
-            startup=self.startup_running(project),
-            vscode=self.vscode_running(project),
-            chrome=self.chrome_running(project),
+            project=project.name, tmux=self.tmux_running(project), startup=self.startup_running(project),
+            vscode=legacy.get("vscode"), chrome=legacy.get("chrome"),
+            apps={resource.app.name: states[resource.app.name]
+                  for resource in apps.resources if not resource.app.legacy_slot},
         )
 
     def reconcile(
@@ -101,11 +141,18 @@ class WorkspaceManager:
         *,
         force_gui: bool = False,
         assume_stopped: bool = False,
+        lock_held: bool = False,
     ) -> WorkspaceStatus:
         self._validate_paths(project)
         self._validate_commands(project)
-        lock = nullcontext() if self.runner.dry_run else self.lock(project.name)
+        lock = nullcontext() if self.runner.dry_run or lock_held else self.lock(project.name)
         with lock:
+            desktop_uuid = None
+            if project.space.enabled:
+                desktop_uuid = DesktopNamesAdapter(self.commands.desktop_names, self.runner).prepare(project)
+            self.desktop_uuid = desktop_uuid
+            windows = (ProjectWindows(self.commands.desktop_names, self.runner, project, desktop_uuid)
+                       if project.space.enabled else None)
             fresh_boot = assume_stopped or not self.tmux_running(project)
             if fresh_boot:
                 self._create_tmux(project)
@@ -120,19 +167,11 @@ class WorkspaceManager:
                 else:
                     self._start_development_command(project)
 
-            vscode_open = self.vscode_running(project)
-            if project.vscode.enabled:
-                if force_gui or not vscode_open:
-                    self._open_vscode(project)
-                else:
-                    print("ok  VS Code workspace is open")
-
-            chrome_open = self.chrome_running(project)
-            if project.chrome.enabled:
-                if force_gui or fresh_boot or not chrome_open:
-                    self._open_chrome(project)
-                else:
-                    print(f"ok  Chrome profile {project.chrome.profile!r} is running")
+            self._return_to_desktop(desktop_uuid)
+            ConfiguredApps(self.commands.desktop_names, self.runner, project, desktop_uuid,
+                           commands=self.commands, windows=windows).restore(
+                               force_gui=force_gui, fresh_boot=fresh_boot)
+            self._return_to_desktop(desktop_uuid)
 
         return self.status(project) if not self.runner.dry_run else WorkspaceStatus(
             project=project.name,
@@ -140,11 +179,17 @@ class WorkspaceManager:
             startup=True if project.startup.command else None,
             vscode=True if project.vscode.enabled else None,
             chrome=True if project.chrome.enabled else None,
+            apps={app.name: True if app.enabled else None for app in project.apps},
         )
 
-    def stop(self, project: ProjectConfig) -> bool:
-        lock = nullcontext() if self.runner.dry_run else self.lock(project.name)
+    def _return_to_desktop(self, key: str | None) -> None:
+        if key and self.runner.mutate((self.commands.desktop_names, "switch", key)):
+            raise WorkError("Could not return to the project desktop after opening its apps")
+
+    def _stop_services(self, project: ProjectConfig, *, lock_held: bool = False) -> bool:
+        lock = nullcontext() if self.runner.dry_run or lock_held else self.lock(project.name)
         with lock:
+            TerminalWindows(self.commands.tmux, self.runner).stop(project)
             if not self.tmux_running(project):
                 print(f"ok  tmux session {project.tmux.session!r} is already stopped")
                 return False
@@ -153,7 +198,7 @@ class WorkspaceManager:
             )
             if code != 0:
                 raise WorkError(f"tmux failed to stop session {project.tmux.session!r}")
-            print("ok  project tmux session stopped; shared GUI applications were left open")
+            print("ok  project tmux session stopped")
             return True
 
     def _validate_paths(self, project: ProjectConfig) -> None:
@@ -162,27 +207,19 @@ class WorkspaceManager:
                 raise WorkError(
                     f"tmux window root does not exist or is not a directory: {window.root}"
                 )
-        if project.vscode.enabled and project.vscode.workspace and not project.vscode.workspace.exists():
-            raise WorkError(f"VS Code workspace does not exist: {project.vscode.workspace}")
-        if (
-            project.context.path
-            and project.context.open_in_vscode
-            and not project.context.path.is_file()
-        ):
-            raise WorkError(f"project context file does not exist: {project.context.path}")
+        ConfiguredApps(self.commands.desktop_names, self.runner, project,
+                       commands=self.commands).validate_paths()
 
     def _validate_commands(self, project: ProjectConfig) -> None:
         if not self.validate_executables:
             return
         required = [("tmux", self.commands.tmux)]
-        if project.vscode.enabled:
-            required.append(("VS Code", self.commands.code))
-        if project.chrome.enabled:
-            required.append(("Chrome", self.commands.chrome))
+        required.extend(ConfiguredApps(self.commands.desktop_names, self.runner, project,
+                                       commands=self.commands).required_commands())
         missing = [f"{label}: {command}" for label, command in required if not executable_exists(command)]
         if missing:
             raise WorkError(
-                "required executable not found (run 'work doctor'): " + ", ".join(missing)
+                "required executable not found (run 'focus doctor'): " + ", ".join(missing)
             )
 
     def _create_tmux(self, project: ProjectConfig) -> None:
@@ -198,27 +235,28 @@ class WorkspaceManager:
             "-c",
             str(first_window.root if first_window else project.root),
         ]
-        if first_window and first_window.command:
-            command.extend(self._tmux_shell_command(first_window.command))
         if self.runner.mutate(command) != 0:
             raise WorkError(f"tmux failed to create session {project.tmux.session!r}")
+        if first_window and first_window.command:
+            self._start_window_command(project, first_window)
         print(f"ok  created tmux session {project.tmux.session!r}")
 
     def _reconcile_tmux_windows(self, project: ProjectConfig, *, fresh_boot: bool) -> None:
         if not project.tmux.windows:
             return
         existing = (
-            {project.tmux.windows[0].name}
+            {project.tmux.windows[0].name: False}
             if fresh_boot
             else self._tmux_window_names(project)
         )
         for window in project.tmux.windows:
             if window.name in existing:
-                print(f"ok  tmux window {window.name!r} is running")
+                if not existing[window.name]:
+                    print(f"ok  tmux window {window.name!r} is running")
                 continue
             self._create_tmux_window(project, window)
 
-    def _tmux_window_names(self, project: ProjectConfig) -> set[str]:
+    def _tmux_window_names(self, project: ProjectConfig) -> dict[str, bool]:
         result = self.runner.capture(
             (
                 self.commands.tmux,
@@ -226,12 +264,19 @@ class WorkspaceManager:
                 "-t",
                 project.tmux.session,
                 "-F",
-                "#{window_name}",
+                "#{window_name}:#{window_dead}",
             )
         )
         if result.returncode != 0:
             raise WorkError(f"tmux failed to inspect session {project.tmux.session!r}")
-        return set(result.stdout.splitlines())
+        running = {}
+        for line in result.stdout.splitlines():
+            name, _, dead = line.rpartition(":")
+            if dead == "1":
+                print(f"ERR tmux command in {name!r} exited; its output is retained. "
+                      "Use 'focus restart' to retry after reviewing the error.")
+            running[name] = dead == "1"
+        return running
 
     def _create_tmux_window(self, project: ProjectConfig, window: TmuxWindowConfig) -> None:
         command = [
@@ -245,11 +290,24 @@ class WorkspaceManager:
             "-c",
             str(window.root),
         ]
-        if window.command:
-            command.extend(self._tmux_shell_command(window.command))
         if self.runner.mutate(command) != 0:
             raise WorkError(f"tmux failed to create window {window.name!r}")
+        if window.command:
+            self._start_window_command(project, window)
         print(f"ok  created tmux window {window.name!r}")
+
+    def _start_window_command(self, project: ProjectConfig, window: TmuxWindowConfig) -> None:
+        # Set retention before starting the service so even an immediate error
+        # remains visible instead of deleting its window and the last session.
+        target = f"{project.tmux.session}:{window.name}"
+        commands = (
+            (self.commands.tmux, "set-window-option", "-t", target, "remain-on-exit", "on"),
+            (self.commands.tmux, "respawn-pane", "-k", "-t", target, "-c", str(window.root),
+             *self._tmux_shell_command(window.command or "")),
+        )
+        for command in commands:
+            if self.runner.mutate(command) != 0:
+                raise WorkError(f"tmux failed to start command for {window.name!r}")
 
     @staticmethod
     def _tmux_shell_command(command: str) -> tuple[str, ...]:
@@ -259,48 +317,5 @@ class WorkspaceManager:
     def _start_development_command(self, project: ProjectConfig) -> None:
         startup = project.startup
         assert startup.command is not None
-        shell = os.environ.get("SHELL", "/bin/zsh")
-        command = (
-            self.commands.tmux,
-            "new-window",
-            "-d",
-            "-t",
-            project.tmux.session,
-            "-n",
-            startup.window,
-            "-c",
-            str(project.root),
-            shell,
-            "-lc",
-            f"exec {startup.command}",
-        )
-        if self.runner.mutate(command) != 0:
-            raise WorkError("tmux failed to start the development command")
+        self._create_tmux_window(project, TmuxWindowConfig(startup.window, project.root, startup.command))
         print(f"ok  started development command in window {startup.window!r}")
-
-    def _open_vscode(self, project: ProjectConfig) -> None:
-        vscode = project.vscode
-        command = [self.commands.code, "--new-window"]
-        if vscode.profile:
-            command.extend(("--profile", vscode.profile))
-        command.append(str(vscode.workspace or project.root))
-        if (
-            project.context.open_in_vscode
-            and project.context.path
-            and project.context.path != vscode.workspace
-        ):
-            command.append(str(project.context.path))
-        if self.runner.mutate(command, cwd=project.root, detached=True) != 0:
-            raise WorkError("VS Code failed to launch")
-        print("ok  opened VS Code workspace")
-
-    def _open_chrome(self, project: ProjectConfig) -> None:
-        command = [
-            self.commands.chrome,
-            f"--profile-directory={project.chrome.profile}",
-            "--new-window",
-            *project.chrome.urls,
-        ]
-        if self.runner.mutate(command, cwd=project.root, detached=True) != 0:
-            raise WorkError("Chrome failed to launch")
-        print(f"ok  opened Chrome profile {project.chrome.profile!r}")

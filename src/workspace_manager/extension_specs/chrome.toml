@@ -1,0 +1,43 @@
+version = 1
+id = "chrome"
+bundle_id = "com.google.Chrome"
+detached = true
+adopt_single_on_desktop = true
+restore_on_fresh_boot = true
+reopen_on_restore_input = "reopen_on_restore"
+
+[command]
+key = "chrome"
+name = "google-chrome"
+candidates = ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta"]
+
+[inputs.profile]
+type = "string"
+default = "Default"
+
+[inputs.urls]
+type = "strings"
+default = []
+schemes = ["http", "https"]
+
+[inputs.reopen_on_restore]
+type = "boolean"
+default = true
+
+[launch.window]
+argv = ["{command}", "--profile-directory={profile}", "--new-window", {spread = "urls"}]
+
+[launch.instance]
+argv = ["{command}", "--user-data-dir={instance_dir}", "--profile-directory={profile}", "--new-window", {spread = "urls"}]
+
+[status.window]
+argv = ["/bin/ps", "-axo", "command="]
+line_all = ["{command_name}", "--profile-directory={profile}"]
+
+[status.instance]
+argv = ["/bin/ps", "-axo", "command="]
+line_all = ["{command_name}", "--user-data-dir={instance_dir}"]
+
+[match]
+kind = "document_values"
+input = "urls"

@@ -1,0 +1,77 @@
+#compdef focus work
+
+_focus_projects() {
+  local project
+  local -a projects
+
+  for project in "${(@f)$("$words[1]" list 2>/dev/null)}"; do
+    if [[ -n "$project" && "$project" != *[[:space:]]* ]]; then
+      projects+=("$project")
+    fi
+  done
+
+  if (( ${#projects} )); then
+    _describe "project" projects
+  fi
+}
+
+_focus_commands() {
+  _describe "command" commands
+}
+
+_focus() {
+  local -a commands
+  commands=(
+    "init:create a project configuration"
+    "edit:edit a project configuration"
+    "status:show workspace status"
+    "stop:close desktop windows, stop services, and remove the desktop"
+    "restart:restart and restore a workspace"
+    "doctor:check or repair local requirements"
+    "list:list configured projects"
+  )
+
+  if (( CURRENT == 2 )); then
+    _alternative \
+      "commands:command:_focus_commands" \
+      "projects:project:_focus_projects"
+    return
+  fi
+
+  case "$words[2]" in
+    edit|restart|status|stop)
+      if (( CURRENT == 3 )); then
+        _focus_projects
+      fi
+      ;;
+    init)
+      _arguments \
+        "2:project name:" \
+        "--root[project root]:directory:_directories" \
+        "--workspace[VS Code workspace or folder]:path:_files" \
+        "--vscode-profile[VS Code profile]:profile:" \
+        "--chrome-profile[Chrome profile directory]:profile:" \
+        "*--url[URL to open]:URL:" \
+        "--context[project context file]:file:_files" \
+        "--startup[development startup command]:command:" \
+        "--non-interactive[disable prompts]" \
+        "--desktop[name and remember the project desktop]" \
+        "--force[replace an existing configuration]"
+      ;;
+    doctor)
+      _values "option" \
+        "--fix[offer to install missing tmux through Homebrew]" \
+        "--yes[approve dependency installation without prompting]"
+      ;;
+    list)
+      ;;
+    *)
+      _values "option" \
+        "--dry-run[print mutations without performing them]" \
+        "--no-attach[restore without attaching to tmux]" \
+        "--force-gui[repair project windows instead of only switching]"
+      ;;
+  esac
+}
+
+_focus "$@"

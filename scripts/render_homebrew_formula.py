@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_TEMPLATE = ROOT / "packaging" / "homebrew" / "work.rb.in"
+DEFAULT_TEMPLATE = ROOT / "packaging" / "homebrew" / "focus.rb.in"
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 VERSION = re.compile(r"^[0-9]+(?:\.[0-9]+){1,3}(?:[-+][A-Za-z0-9.-]+)?$")
 

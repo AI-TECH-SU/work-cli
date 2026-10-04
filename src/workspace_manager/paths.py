@@ -4,14 +4,22 @@ import os
 from pathlib import Path
 
 
+def _application_home(base: Path) -> Path:
+    # Both executable names resolve to the same location. Existing installations
+    # retain their files; new installations use Focus's namespace.
+    if (base / "focus").exists() or not (base / "work").exists():
+        return base / "focus"
+    return base / "work"
+
+
 def config_home() -> Path:
     base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-    return base / "work"
+    return _application_home(base)
 
 
 def state_home() -> Path:
     base = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
-    return base / "work"
+    return _application_home(base)
 
 
 def global_config_path() -> Path:

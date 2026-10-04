@@ -42,12 +42,14 @@ class CliTests(unittest.TestCase):
                             "--url",
                             "http://localhost:3000",
                             "--non-interactive",
+                            "--desktop",
                         ]
                     )
                 self.assertEqual(code, 0)
-                project_file = config_root / "work" / "projects" / "demo.toml"
+                project_file = config_root / "focus" / "projects" / "demo.toml"
                 self.assertTrue(project_file.is_file())
-                self.assertIn("next: select a macOS desktop", output.getvalue())
+                self.assertIn('manager = "desktop-names"', project_file.read_text())
+                self.assertIn("next: run 'focus demo'", output.getvalue())
 
     def test_no_arguments_prints_help(self) -> None:
         output = io.StringIO()
@@ -81,6 +83,16 @@ class CliTests(unittest.TestCase):
     def test_doctor_yes_requires_fix(self) -> None:
         with self.assertRaisesRegex(WorkError, "--yes requires --fix"):
             run(["doctor", "--yes"])
+
+    @patch('workspace_manager.cli.load_project')
+    @patch('workspace_manager.cli.WorkspaceManager')
+    def test_focus_and_stop_route_to_their_lifecycle_operations(self, manager, project):
+        manager.return_value.focus.return_value = 0
+        self.assertEqual(run(['demo']), 0)
+        manager.return_value.focus.assert_called_once_with(project.return_value, no_attach=False,
+                                                           force_gui=False, restart=False)
+        self.assertEqual(run(['stop', 'demo']), 0)
+        manager.return_value.stop.assert_called_once_with(project.return_value)
 
 
 if __name__ == "__main__":

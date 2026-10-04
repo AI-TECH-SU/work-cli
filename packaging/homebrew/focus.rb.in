@@ -1,4 +1,4 @@
-class Work < Formula
+class Focus < Formula
   include Language::Python::Virtualenv
 
   desc "Local-first macOS project workspace manager"
@@ -14,11 +14,13 @@ class Work < Formula
 
   def install
     virtualenv_install_with_resources
-    zsh_completion.install "completions/_work"
+    zsh_completion.install "completions/_focus", "completions/_work"
   end
 
   test do
-    assert_match "work #{version}", shell_output("#{bin}/work --version")
+    assert_match "focus #{version}", shell_output("#{bin}/focus --version")
+    assert_match "focus #{version}", shell_output("#{bin}/work --version")
+    assert_path_exists zsh_completion/"_focus"
     assert_path_exists zsh_completion/"_work"
   end
 end

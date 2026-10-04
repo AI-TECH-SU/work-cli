@@ -82,4 +82,4 @@ def attach_tmux(command: str, session: str) -> int:
 
 
 def print_error(message: str) -> None:
-    print(f"work: error: {message}", file=sys.stderr)
+    print(f"focus: error: {message}", file=sys.stderr)

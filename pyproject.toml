@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "local-workspace-manager"
 version = "0.1.0"
-description = "Local-first macOS project workspace manager"
+description = "Focus: local-first macOS project workspace manager"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -18,7 +18,11 @@ Repository = "https://github.com/AI-TECH-SU/work-cli"
 Issues = "https://github.com/AI-TECH-SU/work-cli/issues"
 
 [project.scripts]
+focus = "workspace_manager.cli:main"
 work = "workspace_manager.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+workspace_manager = ["extension_specs/*.toml"]

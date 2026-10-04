@@ -16,19 +16,19 @@ SPEC.loader.exec_module(MODULE)
 
 class DistributionTests(unittest.TestCase):
     def test_zsh_completion_is_packaged_and_installed_by_homebrew(self) -> None:
-        completion = ROOT / "completions" / "_work"
+        completion = ROOT / "completions" / "_focus"
         manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
-        formula = (ROOT / "packaging" / "homebrew" / "work.rb.in").read_text(
+        formula = (ROOT / "packaging" / "homebrew" / "focus.rb.in").read_text(
             encoding="utf-8"
         )
 
         self.assertTrue(completion.is_file())
-        self.assertIn("#compdef work", completion.read_text(encoding="utf-8"))
-        self.assertIn("include completions/_work", manifest)
-        self.assertIn('zsh_completion.install "completions/_work"', formula)
+        self.assertIn("#compdef focus work", completion.read_text(encoding="utf-8"))
+        self.assertIn("include completions/_focus", manifest)
+        self.assertIn('zsh_completion.install "completions/_focus", "completions/_work"', formula)
 
     def test_formula_declares_tmux_and_renders_release_values(self) -> None:
-        template = (ROOT / "packaging" / "homebrew" / "work.rb.in").read_text(encoding="utf-8")
+        template = (ROOT / "packaging" / "homebrew" / "focus.rb.in").read_text(encoding="utf-8")
 
         rendered = MODULE.render_formula(
             template,

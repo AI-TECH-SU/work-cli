@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 from workspace_manager import __version__
+from workspace_manager.apps import ConfiguredApps
 from workspace_manager.config import (
     default_commands,
     list_project_names,
@@ -23,7 +24,7 @@ from workspace_manager.errors import WorkError
 from workspace_manager.manager import WorkspaceManager
 from workspace_manager.models import CommandConfig, WorkspaceStatus
 from workspace_manager.paths import global_config_path, project_config_path
-from workspace_manager.system import CommandRunner, attach_tmux, executable_exists, print_error
+from workspace_manager.system import CommandRunner, executable_exists, print_error
 
 
 COMMANDS = {"init", "edit", "status", "stop", "restart", "doctor", "list"}
@@ -31,20 +32,20 @@ COMMANDS = {"init", "edit", "status", "stop", "restart", "doctor", "list"}
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="work",
+        prog="focus",
         description="Restore a local project workspace on the current macOS desktop.",
     )
-    parser.add_argument("--version", action="version", version=f"work {__version__}")
+    parser.add_argument("--version", action="version", version=f"focus {__version__}")
     subparsers = parser.add_subparsers(dest="command")
 
     boot = subparsers.add_parser(
         "boot",
-        help="restore a project workspace (normally invoked as: work <project>)",
+        help="restore a project workspace (normally invoked as: focus <project>)",
     )
     boot.add_argument("project")
     boot.add_argument("--dry-run", action="store_true")
     boot.add_argument("--no-attach", action="store_true")
-    boot.add_argument("--force-gui", action="store_true")
+    boot.add_argument("--force-gui", action="store_true", help="repair the desktop's windows instead of only switching")
 
     init = subparsers.add_parser("init", help="create a project configuration")
     init.add_argument("project")
@@ -57,6 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--startup")
     init.add_argument("--non-interactive", action="store_true")
     init.add_argument("--force", action="store_true")
+    init.add_argument("--desktop", action="store_true", help="name and remember this project’s desktop using Desktop Names")
 
     edit = subparsers.add_parser("edit", help="edit a project configuration")
     edit.add_argument("project")
@@ -65,7 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("project", nargs="?")
     status.add_argument("--json", action="store_true")
 
-    stop = subparsers.add_parser("stop", help="stop a project's tmux session")
+    stop = subparsers.add_parser("stop", help="close a project's desktop windows, stop services, and remove its desktop")
     stop.add_argument("project")
     stop.add_argument("--dry-run", action="store_true")
 
@@ -188,13 +190,15 @@ def command_init(args: argparse.Namespace) -> int:
             urls=urls,
             context=context,
             startup=startup,
+            desktop=args.desktop,
         ),
         encoding="utf-8",
     )
     # Parse what we wrote before reporting success.
     load_project(name)
     print(f"created {destination}")
-    print(f"next: select a macOS desktop and run 'work {name}'")
+    print(f"next: run 'focus {name}'" if args.desktop else
+          f"next: select a macOS desktop and run 'focus {name}'")
     return 0
 
 
@@ -202,7 +206,7 @@ def command_edit(project: str) -> int:
     validate_project_name(project)
     path = project_config_path(project)
     if not path.is_file():
-        raise WorkError(f"configuration not found: {path}; run 'work init {project}'")
+        raise WorkError(f"configuration not found: {path}; run 'focus init {project}'")
     editor = os.environ.get("EDITOR")
     if editor:
         command = [*shlex.split(editor), str(path)]
@@ -220,6 +224,7 @@ def _status_dict(status: WorkspaceStatus) -> dict[str, object]:
         "startup": status.startup,
         "vscode": status.vscode,
         "chrome": status.chrome,
+        "apps": status.apps,
     }
 
 
@@ -232,7 +237,7 @@ def _state(value: bool | None) -> str:
 def command_status(project_name: str | None, *, as_json: bool) -> int:
     names = [project_name] if project_name else list_project_names()
     if not names:
-        raise WorkError("no projects configured; run 'work init <project>'")
+        raise WorkError("no projects configured; run 'focus init <project>'")
     manager = WorkspaceManager(load_commands(), CommandRunner())
     statuses = [manager.status(load_project(name)) for name in names]
     if as_json:
@@ -245,6 +250,12 @@ def command_status(project_name: str | None, *, as_json: bool) -> int:
                 f"{status.project}\t{_state(status.tmux)}\t{_state(status.startup)}\t"
                 f"{_state(status.vscode)}\t{_state(status.chrome)}"
             )
+        if any(status.apps for status in statuses):
+            print("\nPROJECT\tAPP\tSTATE")
+            for status in statuses:
+                for name, opened in status.apps.items():
+                    state = "disabled" if opened is None else "running" if opened else "stopped"
+                    print(f"{status.project}\t{name}\t{state}")
     return 0
 
 
@@ -265,7 +276,7 @@ def repair_tmux(*, tmux_command: str, assume_yes: bool) -> str | None:
     if brew is None:
         raise WorkError(
             "tmux is missing and Homebrew was not found; install Homebrew from "
-            "https://brew.sh, then rerun 'work doctor --fix'"
+            "https://brew.sh, then rerun 'focus doctor --fix'"
         )
     if not assume_yes:
         if not sys.stdin.isatty():
@@ -283,7 +294,7 @@ def repair_tmux(*, tmux_command: str, assume_yes: bool) -> str | None:
     if not tmux_available:
         raise WorkError(
             "Homebrew installed tmux, but the configured tmux command is still unavailable; "
-            "update the tmux path in ~/.config/work/config.toml"
+            f"update the tmux path in {global_config_path()}"
         )
     print("ok  installed tmux with Homebrew")
     return resolved_tmux
@@ -298,28 +309,49 @@ def command_doctor(*, fix: bool = False, assume_yes: bool = False) -> int:
                 tmux=repaired_tmux,
                 code=commands.code,
                 chrome=commands.chrome,
+                desktop_names=commands.desktop_names,
             )
+    names = list_project_names()
+    projects = {}
+    configuration_errors = {}
+    for name in names:
+        try:
+            projects[name] = load_project(name)
+        except WorkError as exc:
+            configuration_errors[name] = str(exc)
     checks = [
         (sys.platform == "darwin", f"platform is macOS (found {sys.platform})"),
         (sys.version_info >= (3, 11), f"Python is 3.11+ (found {sys.version.split()[0]})"),
         (executable_exists(commands.tmux), f"tmux executable: {commands.tmux}"),
-        (executable_exists(commands.code), f"VS Code executable: {commands.code}"),
-        (executable_exists(commands.chrome), f"Chrome executable: {commands.chrome}"),
     ]
+    if not names:
+        checks.append((executable_exists(commands.code), f"VS Code executable: {commands.code}"))
+        checks.append((executable_exists(commands.chrome), f"Chrome executable: {commands.chrome}"))
     failed = False
     for ok, message in checks:
         print(f"{'ok ' if ok else 'ERR'} {message}")
         failed = failed or not ok
 
-    for name in list_project_names():
+    for name in names:
+        if name in configuration_errors:
+            print(f"ERR project configuration {name}: {configuration_errors[name]}")
+            failed = True
+            continue
+        project = projects[name]
         try:
-            load_project(name)
-            print(f"ok  project configuration: {name}")
+            apps = ConfiguredApps(commands.desktop_names, CommandRunner(), project, commands=commands)
+            required = apps.required_commands()
         except WorkError as exc:
             print(f"ERR project configuration {name}: {exc}")
             failed = True
-    if not list_project_names():
-        print("info no projects configured; run 'work init <project>'")
+            continue
+        print(f"ok  project configuration: {name}")
+        for label, command in required:
+            available = executable_exists(command)
+            print(f"{'ok ' if available else 'ERR'} {label} executable for {name}: {command}")
+            failed = failed or not available
+    if not names:
+        print("info no projects configured; run 'focus init <project>'")
     return 1 if failed else 0
 
 
@@ -350,17 +382,9 @@ def run(argv: list[str] | None = None) -> int:
     if args.command == "stop":
         manager.stop(project)
         return 0
-    if args.command == "restart":
-        manager.stop(project)
-        manager.reconcile(project, force_gui=False, assume_stopped=args.dry_run)
-        if not args.no_attach and not args.dry_run:
-            return attach_tmux(manager.commands.tmux, project.tmux.session)
-        return 0
-    if args.command == "boot":
-        manager.reconcile(project, force_gui=args.force_gui)
-        if not args.no_attach and not args.dry_run:
-            return attach_tmux(manager.commands.tmux, project.tmux.session)
-        return 0
+    if args.command in {"boot", "restart"}:
+        return manager.focus(project, no_attach=args.no_attach, force_gui=getattr(args, "force_gui", False),
+                             restart=args.command == "restart")
     raise WorkError(f"unsupported command: {args.command}")
 
 

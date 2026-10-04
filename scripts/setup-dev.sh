@@ -33,8 +33,10 @@ fi
 
 if [[ -n "$completion_dir" && -w "$(dirname "$completion_dir")" ]]; then
   mkdir -p "$completion_dir"
-  ln -sfn "$repo_root/completions/_work" "$completion_dir/_work"
-  printf 'installed zsh completion: %s\n' "$completion_dir/_work"
+  for completion in _focus _work; do
+    ln -sfn "$repo_root/completions/$completion" "$completion_dir/$completion"
+    printf 'installed zsh completion: %s\n' "$completion_dir/$completion"
+  done
 else
   printf 'info: zsh completion was not installed; no writable site-functions directory found\n'
 fi
