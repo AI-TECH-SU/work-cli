@@ -1,126 +1,166 @@
 # Implementation plan
 
-## Accepted v1 workflow
+This opening section describes the current design. The dated records below are
+historical evidence; later corrections supersede earlier implementation choices.
 
-The user runs:
+## Accepted workflow
 
 ```console
 focus projectA
 ```
 
-The CLI loads the named TOML file, serializes concurrent launches with a local
-file lock, creates or selects the configured project desktop, and creates or
-repairs resources. It either attaches the calling terminal or opens a Terminal
-window per service. Desktop Names needs Accessibility for desktop creation and
-switching; separate Terminal windows need Automation access to Terminal.
+The CLI loads a named TOML project under a per-project lock. With a dedicated
+project desktop, an existing desktop is switched to immediately; it does not
+relaunch resources or attach clients. A missing desktop is created and named,
+then its enabled resources are restored. `--force-gui` explicitly repairs an
+existing partial desktop. Matching project windows are reused and moved before
+new windows are requested. Desktop Names supplies desktop/window operations
+through its existing Accessibility identity; yabai is not used.
 
-## Delivery phases
+All apps and service providers use `[[apps]]`. Bundled `vscode`, `chrome`, and
+`tmux` TOML specifications are interpreted by the same generic application and
+session capabilities as local extensions. An explicit resource list is
+authoritative: no implicit tmux session or unused executable is required.
+Legacy app, tmux, and startup sections translate into the same model.
 
-1. Define strict dataclasses and a versioned TOML contract.
-2. Implement command discovery, subprocess execution, dry-run output, and a
-   per-project local lock.
-3. Implement tmux, startup-command, VS Code, Chrome, and context reconciliation.
-4. Add guided initialization, configuration editing, list/status/stop/restart,
-   and installation diagnostics.
-5. Verify parsing, validation, command construction, idempotency, and CLI error
-   handling with standard-library `unittest` tests.
+`focus stop` closes individual windows exclusively on a dedicated project
+desktop, stops configured service sessions, verifies emptiness, and removes the
+desktop. Without a dedicated desktop, stop only shuts down service resources.
+`focus restart` restarts services while retaining the desktop and app windows.
 
-## File structure
+## Implementation organization
+
+The core owns configuration, project/desktop coordination, operation locks,
+verified window identity/movement, and cleanup. Extensions supply provider-specific
+commands, option schemas, matching, output formats, ownership keys, environment
+rules, and dependency metadata. The engine dispatches by reusable capability;
+it does not select a Python handler by provider ID.
 
 ```text
-.
-├── PROJECT.md
-├── README.md
-├── docs/
-│   ├── DISTRIBUTION.md
-│   └── IMPLEMENTATION_PLAN.md
-├── packaging/
-│   └── homebrew/
-│       └── focus.rb.in
-├── pyproject.toml
-├── scripts/
-│   └── render_homebrew_formula.py
-├── src/
-│   └── workspace_manager/
-│       ├── __init__.py
-│       ├── __main__.py
-│       ├── cli.py
-│       ├── config.py
-│       ├── errors.py
-│       ├── manager.py
-│       ├── models.py
-│       ├── paths.py
-│       └── system.py
-└── tests/
-    ├── test_cli.py
-    ├── test_config.py
-    └── test_manager.py
+src/workspace_manager/
+├── cli.py                 # Commands, initialization, status, diagnostics
+├── config.py              # Project parsing and initialization rendering
+├── app_compat.py          # Legacy sections translated into resources
+├── apps.py                # Resource reconciliation and shared lifecycle
+├── extensions.py          # Specification loading and GUI capability
+├── session_extensions.py  # Generic service and independent-view capability
+├── extension_specs/
+│   ├── vscode.toml
+│   ├── chrome.toml
+│   └── tmux.toml
+├── terminals.py           # macOS Terminal client presentation
+├── desktop.py             # Desktop Names adapter and project assignment
+├── windows.py             # Inventory, matching, verified move/close
+├── manager.py             # Project operations and orchestration
+├── models.py
+├── paths.py
+└── system.py
 ```
+
+The [setup guide](SETUP.md), [lifecycle guide](HOW_IT_WORKS.md), and
+[extension reference](EXTENSIONS.md) describe the supported contracts.
+`packaging/homebrew/focus.rb.in` and `scripts/render_homebrew_formula.py` cover
+release packaging. Tests exercise configuration, generic providers, resource
+reconciliation, failure recovery, CLI behavior, and native adapter boundaries.
 
 ## Reconciliation rules
 
-- **tmux:** `tmux has-session` is the authoritative boot check. A missing
-  session is created with either the first configured project window or a
-  default shell rooted at the project directory. Each configured window has an
-  independent root and optional command; missing windows are restored without
-  duplicating healthy ones.
-- **startup command:** an optional health check is authoritative when supplied;
-  otherwise a live tmux window with the configured name is the marker. A
-  missing command is started in a new tmux window.
-- **VS Code:** `code --status` is searched for the configured workspace/folder.
-  A missing workspace is opened in a new window using the configured profile.
-  `PROJECT.md` is included in that launch when configured. New windows in the
-  existing app are the default across all integrations. Explicit opt-in to VS
-  Code's separate-instance mode uses a project-specific user-data directory and
-  detects its process directly; this is not a desktop-placement fallback.
-  Desktop-managed projects use a stable workspace file per desktop UUID and
-  source workspace path, since VS Code reuses an already-open workspace despite
-  `--new-window`. Relative folders become absolute and the initial workspace
-  settings are copied. Existing copies preserve edits and are not overwritten.
-  Source-workspace changes are not automatically merged. Workspace trust remains
-  a VS Code user decision; Focus never edits trust state.
-- **Chrome:** the current user's process list is checked for the configured
-  Chrome profile. URLs open in a new Chrome window on a fresh boot or when that
-  profile is not running. Individual tab inspection is deliberately excluded
-  because it would require browser automation. `reopen_on_restore = false`
-  limits new windows to fresh boots and explicit `--force-gui` requests.
-- **Terminal:** grouped tmux sessions give each service window an independent
-  selection while sharing the underlying processes. Terminal's `do script`
-  command without a target tab opens a new window in its existing app. Access
-  is checked before project changes; attached views are reused. Extra app
-  instances are forbidden because they can restore unrelated saved windows.
-- **stop:** project-owned tmux views and the base session are terminated. Shared GUI
-  applications are left intact.
+- **Resource selection:** an `apps` list determines enabled resources. Projects
+  without an `apps` key retain legacy defaults. Explicit legacy sections still
+  translate; conflicting enabled declarations are rejected. New initialization
+  emits extension resources which users can remove or disable independently.
+- **Session capability:** declared operations inspect/create the base session,
+  restore missing service units, retain failed output, present clients, and stop
+  owned resources. Service commands run once on unit creation. Dead units retain
+  output and need an intentional restart after the underlying problem is fixed.
+  A configured startup check supplies readiness; otherwise the startup unit's
+  live/dead state is used. Resource status includes that readiness; the legacy
+  session/startup columns remain separate.
+- **GUI capability:** on managed desktops, reuse a saved project window or a
+  unique semantic match, verify movement, and launch only when needed. Saved
+  identity includes window ID, process, bundle, boot identity, and configuration
+  context. Failed placement of a newly requested window retries the same window.
+  Ambiguous matches and unsupported app behavior fail explicitly.
+- **Launch policy:** each resource independently chooses window/instance mode
+  and reuse. Reuse takes priority; disabling it leaves old windows in place and
+  requires a newly appeared window. Refocusing an existing desktop still only
+  switches. Instance isolation is defined by the specification's actual command
+  flags; it is not a desktop-placement workaround.
+- **Bundled editor/browser behavior:** VS Code uses the original workspace and
+  profile, with workspace title/document matching. No workspace descriptor is
+  copied. Chrome uses recorded identity or configured document URLs; a sole
+  window on the project desktop may be adopted when the declared policy and
+  resource ambiguity checks permit it. The specifications provide optional
+  instance data directories and non-desktop status probes.
+- **Probe-only restoration:** without desktop management, a GUI extension may
+  use its declared read-only status probe. `restore_on_fresh_boot` supports a
+  fresh configured service session. In an app-only project it uses per-resource
+  first-launch state keyed by configuration identity and macOS boot, so initial launch does not
+  depend on tmux. Save the marker only after a successful launch request, never
+  during dry-run; unreadable state blocks a launch rather than risking duplicates.
+  Subsequent restoration honors `reopen_on_restore = false`; an explicit repair
+  can still request a launch. Dedicated-desktop stop clears the marker, while
+  service-only stop retains it because GUI apps remain open. Probe results do not
+  prove visible window placement.
+- **Terminal views:** session specifications declare independent views sharing
+  the original service processes, including ownership and title commands. The
+  common presenter defaults to new windows in the existing Terminal app, with
+  Automation checked before project mutations. Explicit instance mode uses an
+  owned command document and may restore Terminal's saved windows. Attached
+  provider clients do not by themselves prove visible placement.
+- **Stop:** close desktop-exclusive windows with native Close actions, honoring
+  save prompts. Defer declared session-client bundles until their services are
+  stopped. Verify the desktop is empty before removal and clear its assignment
+  only after native removal succeeds. Keep shared app processes and windows on
+  other/all desktops. Projects without dedicated desktops stop services only.
 
 ## Safety and auditability
 
-- Subprocesses use argument arrays; no project value is interpolated into an
-  implicit shell command.
-- Only explicitly configured tmux-window, startup, and health-check commands run
-  through the user's shell.
-- Configuration validation rejects unknown versions, invalid project names,
-  invalid URLs, missing roots, and malformed value types before launching.
-- `--dry-run` shows mutating external commands.
-- Runtime coordination files stay under the user's XDG state directory.
-- No network request is made by `focus` itself.
+- Provider operations and GUI launches use argument arrays. Only explicitly
+  configured service/startup/check commands cross the user's shell boundary.
+- Specifications are local auditable files. Their commands run as the current
+  user; Focus does not fetch providers or execute Python plugins.
+- Strict validation checks schema, option types, paths, executable requirements,
+  duplicate identities, and supported templates before restoration mutations.
+- `--dry-run` shows intended mutations without creating desktops, launching apps,
+  or starting services. It is not a live permission or placement test.
+- Runtime assignments, window identities, launch markers, and locks stay under
+  the selected XDG state directory. Both CLI names share configuration and state.
+- `focus status` is read-only. `booted` means at least one resource is enabled and
+  all enabled resources report ready; it does not imply every service's health
+  or a visible desktop layout.
+- A normal focus command does not install dependencies or make network requests
+  itself. Dependency repair is a separate, explicitly approved operation.
 
-## Known v1 boundary
+## Platform and live-validation boundary
 
-Desktop creation, naming, and switching are available through the optional Desktop Names
-adapter. It uses the custom app’s UUID inventory, preference store, and native
-navigation. Focus reuses a valid assigned UUID, then an unambiguous matching name,
-and creates a named desktop when neither exists. Deleted assignments recover
-automatically. Focus persists project UUID bindings before subsequent launch
-steps so a retry reuses a newly created desktop. Moving application windows remains
-outside this integration. Creating and switching desktops require the
-Desktop Names app’s macOS Accessibility permission; yabai is not used.
+Desktop Names supplies UUID inventory, naming, creation/switching/removal, and
+window inventory/move/close. Focus preserves a valid project assignment, otherwise
+uses an unambiguous name match or creates a replacement. Persisting the UUID
+before resource launch allows recovery from partial failures. Current desktop
+support is for one display and regular desktops; fullscreen/all-desktop windows
+cannot be moved by this adapter.
+
+Window movement uses a runtime-resolved macOS private operation and verifies
+membership. Unsupported operations and permission failures stop with an error.
+Default Terminal window presentation separately requires the calling app's
+Automation permission. Instance mode is explicit and follows app behavior.
+
+Automated checks establish configuration/command/lifecycle behavior. Existing
+live evidence establishes desktop switching and project stop cleanup, as recorded
+below. The corrected window-move path, complete visible Terminal layout, and new
+extension/instance configurations still require full live acceptance. A process
+or session being present is not a substitute for that test.
 
 ## Distribution boundary
 
-The Homebrew formula declares tmux as a package dependency, so Homebrew users
-receive it automatically. tmux is not vendored inside the Python application.
-For pipx and source installations, `focus doctor --fix` can install the missing
-dependency through an existing Homebrew installation after explicit approval.
+The Focus package includes the bundled TOML specifications, not provider binaries.
+The Homebrew template installs Python and Focus; tmux is optional and required
+only by enabled resources that select it. `focus doctor` checks configured,
+enabled providers. Declared Homebrew repair metadata lets `focus doctor --fix`
+show the exact install command and request approval; it does not install Homebrew.
+No package is installed merely by selecting an extension or launching a project.
+A published immutable release archive/formula remains a separate release step.
 
 ## Focus rename validation (2026-10-03)
 
@@ -365,3 +405,34 @@ change. No live GUI launches or user configuration changes were performed.
 
 Added `docs/EXTENSIONS.md` and recorded the specification-based architecture in
 the Focus engineering guideline.
+
+### Specification-based session extensions (2026-10-04)
+
+tmux now ships as a session extension selected through the same `[[apps]]`
+resource list. Its specification owns provider commands, flags, inventory
+formats, attachment environment, grouped-view ownership markers, and optional
+Homebrew installation metadata. The shared session engine handles lifecycle
+operations; the Terminal adapter receives resolved commands and window titles.
+Explicit resource titles and saved bindings distinguish multiple session
+resources. Exact tmux targets prevent prefix matching unrelated sessions.
+
+Legacy `[tmux]` and `[startup]` configurations translate into this resource model
+while preserving session and view identities. New initialization emits a tmux
+extension entry. Explicit app lists without a session resource never invoke or
+require tmux. Doctor checks enabled resources and offers only declared dependency
+installations; the Homebrew formula template no longer requires tmux globally.
+
+Status includes configured startup readiness for explicit session resources.
+The legacy TMUX and STARTUP fields retain their separate meanings. Apps-only
+projects record successful initial probe-based launches so disabling restoration
+does not skip the first launch after reboot or repeatedly reopen a closed browser.
+
+Validation: all 226 tests, isolated CLI smoke checks, Python syntax compilation,
+and diff checks pass through `scripts/check.sh`. Coverage includes a second
+session provider using the same engine, exact targeting and ownership, retained
+service output, legacy translation, disabled dependencies, startup readiness,
+first-launch state, dependency repair selection, and lifecycle ordering. The 18
+documentation TOML blocks parse, both local specification examples validate, and
+nine project/resource examples load through the actual configuration parser.
+No real tmux commands, GUI launches, package installations, or user project
+configuration changes were performed. Live desktop acceptance remains pending.

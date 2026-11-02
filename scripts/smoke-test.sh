@@ -50,7 +50,7 @@ list_output="$(run_work list)"
 
 dry_run_output="$(run_work work-cli-smoke --dry-run)"
 [[ "$dry_run_output" == *"new-session"* ]]
-[[ "$dry_run_output" == *"opened VS Code workspace"* ]]
+[[ "$dry_run_output" == *"--new-window"* ]]
 
 status_output="$(run_work status work-cli-smoke --json)"
 "$python_command" -c \

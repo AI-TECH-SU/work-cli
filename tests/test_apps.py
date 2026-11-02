@@ -41,7 +41,7 @@ class AppsTests(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         self.app = AppConfig("notes", BUNDLE, open=(str(self.root / "PROJECT.md"),))
-        self.project = ProjectConfig("demo", self.root, TmuxConfig("demo"), VSCodeConfig(False),
+        self.project = ProjectConfig("demo", self.root, TmuxConfig("demo", enabled=False), VSCodeConfig(False),
                                      ChromeConfig(False), ContextConfig(), StartupConfig(),
                                      self.root / "demo.toml", apps=(self.app,))
         self.runner = AppRunner([])

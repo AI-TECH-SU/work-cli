@@ -156,7 +156,7 @@ class AppsManagerTests(unittest.TestCase):
                 with patch("workspace_manager.manager.executable_exists", side_effect=lambda value: value != selected) as exists:
                     with self.assertRaisesRegex(WorkError, "required executable not found.*app notes"):
                         WorkspaceManager(self.commands, runner).reconcile(project)
-                self.assertEqual([call.args[0] for call in exists.call_args_list], ["tmux", "desktop-names", selected])
+                self.assertEqual([call.args[0] for call in exists.call_args_list], ["desktop-names", selected])
                 self.assertEqual(runner.captures, [])
                 self.assertEqual(runner.mutations, [])
 
@@ -174,7 +174,7 @@ class AppsManagerTests(unittest.TestCase):
         runner = AppManagerRunner(project)
         with patch("workspace_manager.manager.executable_exists", return_value=True) as exists:
             status = WorkspaceManager(self.commands, runner).reconcile(project)
-        self.assertEqual([call.args[0] for call in exists.call_args_list], ["tmux"])
+        self.assertEqual([call.args[0] for call in exists.call_args_list], [])
         self.assertEqual(status.apps, {"notes": None})
         self.assertFalse(any(command[0] == "desktop-names" for command in runner.captures + runner.mutations))
 
@@ -206,8 +206,8 @@ class AppsManagerTests(unittest.TestCase):
         self.assertFalse(runner.running)
         self.assertEqual(binding.read_bytes(), original_binding)
         self.assertEqual(json.dumps(runner.rows), original_windows)
-        self.assertEqual(runner.mutations, [("tmux", "kill-session", "-t", "focus-demo")])
-        self.assertTrue(all(command[0] == "tmux" for command in runner.captures))
+        self.assertEqual(runner.mutations, [])
+        self.assertEqual(runner.captures, [])
 
 
 if __name__ == "__main__":

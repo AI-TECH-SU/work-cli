@@ -69,16 +69,11 @@ def executable_exists(command: str) -> bool:
     return shutil.which(command) is not None
 
 
-def attach_tmux(command: str, session: str) -> int:
-    args = (
-        [command, "switch-client", "-t", session]
-        if os.environ.get("TMUX")
-        else [command, "attach-session", "-t", session]
-    )
+def run_interactive(command: Sequence[str]) -> int:
     try:
-        return subprocess.run(args, check=False).returncode
+        return subprocess.run(list(command), check=False).returncode
     except FileNotFoundError as exc:
-        raise WorkError(f"command not found: {command}") from exc
+        raise WorkError(f"command not found: {command[0]}") from exc
 
 
 def print_error(message: str) -> None:

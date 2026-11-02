@@ -10,8 +10,8 @@ focus projectA
 Start with the [setup and daily-use guide](docs/SETUP.md), including project TOML,
 profiles, permissions, updates, and troubleshooting. Read
 [How Focus works](docs/HOW_IT_WORKS.md) for the desktop lifecycle, window reuse,
-saved state, and current live verification status. [Application extensions](docs/EXTENSIONS.md)
-explains how TOML specifications provide app behavior.
+saved state, and current live verification status. [Extension specifications](docs/EXTENSIONS.md)
+explains how TOML specifications provide app and service behavior.
 
 The v1 CLI is written in Python and uses only the standard library at runtime.
 It has no cloud service, account, telemetry, AI integration, background daemon,
@@ -20,7 +20,7 @@ every external command can be inspected with `focus projectA --dry-run`. An
 optional Desktop Names integration creates, names, and switches project desktops,
 moves existing windows, and removes empty project desktops through our custom
 macOS app. Desktop and window management require its Accessibility permission.
-Direct bundle entries and extensions without a status probe also use Desktop
+Direct bundle entries and GUI extensions without a status probe also use Desktop
 Names to identify windows when desktop management is disabled.
 Window moving uses a runtime-checked macOS operation; unsupported systems report
 a failure without opening duplicate windows. The corrected move path still needs
@@ -40,8 +40,7 @@ The Python distribution and GitHub repository retain their existing identifiers.
 
 ## What it restores
 
-- a named tmux session;
-- an optional development command in a dedicated tmux window;
+- optional service sessions and Terminal views through the bundled `tmux` extension;
 - a VS Code workspace, profile, and project documents through the bundled `vscode` extension;
 - a Chrome profile and configured URLs through the bundled `chrome` extension;
 - other installed macOS applications through extension specifications or direct `[[apps]]` entries;
@@ -53,21 +52,21 @@ desktop and returns immediately. It does not reopen apps, restart services, or
 attach another Terminal client. When the desktop is missing, Focus creates and
 names one, moves matching existing project windows there, and opens missing
 windows. Use `--force-gui` explicitly to repair a partial desktop. Without desktop
-management, the existing tmux-based reconciliation workflow remains available.
+management, Focus reconciles the configured extension resources.
 
 `focus stop <project>` closes the windows on that dedicated desktop, stops its
 services, and removes the empty desktop. Shared apps' windows on other desktops
 stay open. Save/close prompts stop cleanup and keep the desktop for a retry.
 Cleanup includes windows opened manually on the dedicated desktop.
-For projects without a dedicated desktop, it stops only their tmux services.
+For projects without a dedicated desktop, it stops only their configured service sessions.
 
 ## Requirements
 
 - macOS
 - Python 3.11 or newer
-- tmux
+- the executables required by enabled extensions (tmux only when the `tmux` extension is configured)
 - the applications enabled for a project
-- Desktop Names for desktop management, direct bundle entries, or extensions without a status probe
+- Desktop Names for desktop management, direct bundle entries, or GUI extensions without a status probe
 
 Without the optional adapter, select the desired desktop, open Terminal, and run
 `focus <project>`. See [Desktop Names integration](#desktop-names-integration) to associate a project
@@ -115,14 +114,15 @@ editable, changes under `src/workspace_manager/` take effect immediately.
 Reinstall only after changing packaging metadata or entry points in
 `pyproject.toml`.
 
-If tmux is missing, let `focus` repair that system dependency through Homebrew:
+If an enabled extension declares a missing Homebrew dependency, inspect the proposed repair:
 
 ```console
 focus doctor --fix
 ```
 
-The command prints the exact operation and asks before running it. A future
-published Homebrew formula will declare tmux directly:
+The command prints the exact operation and asks before running it. The `tmux`
+specification declares `brew install tmux`; a project without that extension does
+not need tmux. A future published Homebrew formula installs Focus itself:
 
 ```console
 brew install AI-TECH-SU/tap/focus
@@ -180,9 +180,9 @@ focus init <project>            create a project configuration
 focus edit <project>            open its TOML in your editor
 focus status [project]          inspect one or all configured projects
 focus stop <project>            close desktop windows, stop services, remove desktop
-focus restart <project>         restart tmux and reconcile all resources
+focus restart <project>         restart service extensions and reconcile resources
 focus doctor                    validate the local installation
-focus doctor --fix              offer to install missing tmux through Homebrew
+focus doctor --fix              offer declared missing dependencies through Homebrew
 focus list                      list configured projects
 ```
 
@@ -200,19 +200,23 @@ Example `~/.config/focus/projects/projectA.toml`:
 version = 1
 root = "/Users/me/src/projectA"
 
-[tmux]
-session = "focus-projectA"
-# "current" attaches the invoking terminal (default); "windows" opens Terminal windows.
-presentation = "windows"
+[[apps]]
+name = "services"
+extension = "tmux"
 launch_mode = "window"  # Or "instance"; applies to Terminal clients.
 reuse_existing = true
 
-[[tmux.windows]]
+[apps.options]
+session = "focus-projectA"
+# "current" attaches here; "windows" opens Terminal views; "none" starts services only.
+presentation = "windows"
+
+[[apps.options.windows]]
 name = "api"
 root = "services/api"
 command = "python -m api"
 
-[[tmux.windows]]
+[[apps.options.windows]]
 name = "web"
 root = "apps/web"
 command = "npm run dev"
@@ -247,26 +251,35 @@ target = "project"
 # uuid = "EXISTING-DESKTOP-UUID"  # Explicitly use an existing desktop instead.
 ```
 
-Paths in a project file may be absolute or relative to `root`. The optional
-startup and health-check strings are explicitly user-authored shell commands;
-they run through the user's shell inside the project directory.
+Paths in a project file may be absolute or relative to `root`. Service commands
+and the optional startup health check are explicitly user-authored shell
+commands. Service commands run in each service's directory; the startup command
+and its check run in the project root. Keep the service in the foreground so the
+session provider owns its lifetime; detached daemons and external containers are
+not supervised by Focus.
 
-When `tmux.windows` is configured, the first entry becomes the session's first
-window and each remaining entry is created independently. Window roots may be
-absolute or relative to the project root. Commands are optional; omit one to
-open an interactive project shell. Missing configured windows are restored during setup or an explicit repair. The legacy `[startup]` window remains available for a
-single project-wide development command.
+The `tmux` extension's `windows` input defines service windows. The first becomes
+the session's first window; remaining entries are created independently. Omit
+`command` to open an interactive project shell. Missing windows are restored
+during setup or repair. Dead windows retain output and require `focus restart`
+after fixing the underlying problem.
 
-As an alternative to the service list, a single startup command can be configured
-as follows. Do not put the same server in both places:
+For a single development server with an optional health check, the tmux
+specification also accepts startup options:
 
 ```toml
-[startup]
-command = "npm run dev"
-window = "dev"
+[apps.options]
+session = "focus-projectA"
+presentation = "windows"
+startup_command = "npm run dev"
+startup_window = "dev"
 # Optional. Exit 0 while the service is healthy.
-check = "curl -fsS http://localhost:3000 >/dev/null"
+startup_check = "curl -fsS http://localhost:3000 >/dev/null"
 ```
+
+Use these options on the existing service resource instead of declaring the same
+server in `windows`. Legacy `[tmux]` and `[startup]` sections still translate into
+the bundled extension; new configuration uses `[[apps]]`.
 
 `presentation = "windows"` with `launch_mode = "window"` opens one Terminal window
 per service using Terminal's scripting interface in the existing app. Each window
@@ -292,7 +305,7 @@ elsewhere. It never infers Chrome project ownership from a shared app process or
 page title; it uses a recorded window or an exposed exact configured URL. An
 ambiguous match stops with an error rather than moving an arbitrary window.
 
-Each `[[apps]]` entry and the `[tmux]` table independently accept
+Each `[[apps]]` entry, including the service resource, independently accepts
 `launch_mode = "window" | "instance"` and `reuse_existing = true | false`.
 Reuse happens first; launch mode applies when a new window is needed. Disabling
 reuse requests new windows during initial launch or repair and leaves existing
@@ -302,17 +315,20 @@ In instance mode, the bundled extension specifications give VS Code/Chrome
 separate project/resource settings and sign-in storage. Terminal instance mode
 starts a new process per service client and can restore Terminal's saved windows;
 it is explicit opt-in. The older
-`[vscode]`, `[chrome]`, and `[context]` sections are accepted through compatibility
-translation, including the `vscode.separate_instance` alias. See
+`[vscode]`, `[chrome]`, `[context]`, `[tmux]`, and `[startup]` sections are accepted
+through compatibility translation, including the `vscode.separate_instance` alias. See
 [per-app setup](docs/SETUP.md#choose-what-opens-and-how-per-app) for examples and
 behavior when an application refuses to create a new window.
 
 The project file chooses **what** to open. The extension specification supplies
 the option schema, launch commands, and window matching for **how** that app works.
-Chrome and VS Code use the same extension engine as locally supplied app specifications;
-adding another supported app does not require a Python handler.
-An `apps` list chooses which apps run; omitted legacy sections add no applications.
-Existing configurations without an `apps` key keep their original defaults.
+Chrome, VS Code, and tmux are bundled specifications. GUI and session capabilities
+interpret their declarations; adding another supported provider does not require
+a handler selected by its extension ID.
+An `apps` list chooses all resources; omitted legacy sections add no applications
+or tmux session. An app-only project can run without tmux installed. Explicit
+legacy sections still translate; declaring the same enabled extension both ways
+is rejected. Existing configurations without an `apps` key keep their defaults.
 
 ### Add another application
 
@@ -341,8 +357,8 @@ literal `window_command` or `instance_command` argument list instead of `open`.
 See [other application setup](docs/SETUP.md#add-other-applications) for direct-entry
 fields, finding bundle IDs, matching rules, and app-specific limits. For behavior
 you want to reuse across projects, write a local [extension specification](docs/EXTENSIONS.md)
-and select it with `extension = "your-extension"`. Terminal service views remain
-configured through `[tmux]`.
+and select it with `extension = "your-extension"`. Configure Terminal service
+views with an `[[apps]]` entry selecting `extension = "tmux"`.
 
 ### Executable overrides
 
@@ -461,7 +477,7 @@ focus status work-cli-dev --json
 
 ### Real integration test
 
-Validate the local requirements and install tmux through Homebrew if needed:
+Validate the configured requirements and review any declared dependency repair:
 
 ```console
 focus doctor

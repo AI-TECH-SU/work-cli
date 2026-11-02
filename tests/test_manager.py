@@ -45,7 +45,7 @@ class FakeRunner:
 class ManagerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
-        root = Path(self.temp.name)
+        root = Path(self.temp.name).resolve()
         workspace = root / "demo.code-workspace"
         context = root / "PROJECT.md"
         workspace.write_text("{}\n", encoding="utf-8")
@@ -88,8 +88,8 @@ class ManagerTests(unittest.TestCase):
 
     def test_healthy_workspace_does_not_duplicate_resources(self) -> None:
         responses = {
-            ("tmux", "has-session", "-t", "work-demo"): (0, ""),
-            ("tmux", "list-windows", "-t", "work-demo", "-F", "#{window_name}:#{window_dead}"): (0, "shell:0\ndev:0\n"),
+            ("tmux", "has-session", "-t", "=work-demo"): (0, ""),
+            ("tmux", "list-windows", "-t", "=work-demo", "-F", "#{window_name}:#{window_dead}"): (0, "shell:0\ndev:0\n"),
             ("code", "--status"): (0, str(self.project.vscode.workspace)),
             ("/bin/ps", "-axo", "command="): (0, "/Applications/Google Chrome --profile-directory=Profile 2\n"),
         }
@@ -104,8 +104,8 @@ class ManagerTests(unittest.TestCase):
 
     def test_partial_workspace_reopens_missing_vscode_only(self) -> None:
         responses = {
-            ("tmux", "has-session", "-t", "work-demo"): (0, ""),
-            ("tmux", "list-windows", "-t", "work-demo", "-F", "#{window_name}:#{window_dead}"): (0, "shell:0\ndev:0\n"),
+            ("tmux", "has-session", "-t", "=work-demo"): (0, ""),
+            ("tmux", "list-windows", "-t", "=work-demo", "-F", "#{window_name}:#{window_dead}"): (0, "shell:0\ndev:0\n"),
             ("/bin/ps", "-axo", "command="): (0, "/Applications/Google Chrome --profile-directory=Profile 2\n"),
         }
         runner = FakeRunner(responses)
@@ -183,8 +183,8 @@ class ManagerTests(unittest.TestCase):
             runner.mutations[0][0:9],
             ("tmux", "new-session", "-d", "-s", "work-demo", "-n", "api", "-c", str(api)),
         )
-        retention = ("tmux", "set-window-option", "-t", "work-demo:web", "remain-on-exit", "on")
-        start = ("tmux", "respawn-pane", "-k", "-t", "work-demo:web", "-c", str(web),
+        retention = ("tmux", "set-window-option", "-t", "=work-demo:web", "remain-on-exit", "on")
+        start = ("tmux", "respawn-pane", "-k", "-t", "=work-demo:web", "-c", str(web),
                  os.environ.get("SHELL", "/bin/zsh"), "-lc", "exec npm run dev")
         self.assertIn(retention, runner.mutations)
         self.assertIn(start, runner.mutations)
@@ -209,8 +209,8 @@ class ManagerTests(unittest.TestCase):
             source=self.project.source,
         )
         responses = {
-            ("tmux", "has-session", "-t", "work-demo"): (0, ""),
-            ("tmux", "list-windows", "-t", "work-demo", "-F", "#{window_name}:#{window_dead}"): (0, "api:0\n"),
+            ("tmux", "has-session", "-t", "=work-demo"): (0, ""),
+            ("tmux", "list-windows", "-t", "=work-demo", "-F", "#{window_name}:#{window_dead}"): (0, "api:0\n"),
         }
         runner = FakeRunner(responses)
         manager = WorkspaceManager(
@@ -226,8 +226,8 @@ class ManagerTests(unittest.TestCase):
         project = replace(self.project, tmux=TmuxConfig('work-demo', (TmuxWindowConfig('api', self.project.root),)),
                           vscode=VSCodeConfig(False), chrome=ChromeConfig(False), startup=StartupConfig())
         runner = FakeRunner({
-            ('tmux', 'has-session', '-t', 'work-demo'): (0, ''),
-            ('tmux', 'list-windows', '-t', 'work-demo', '-F', '#{window_name}:#{window_dead}'): (0, 'api:1\n'),
+            ('tmux', 'has-session', '-t', '=work-demo'): (0, ''),
+            ('tmux', 'list-windows', '-t', '=work-demo', '-F', '#{window_name}:#{window_dead}'): (0, 'api:1\n'),
         })
         with patch('sys.stdout', new_callable=StringIO) as output:
             WorkspaceManager(self.commands, runner, validate_executables=False).reconcile(project)
@@ -270,7 +270,10 @@ class ManagerTests(unittest.TestCase):
     def test_no_desktop_reuse_false_opens_new_windows_even_when_apps_detected(self):
         project = replace(self.project, vscode=replace(self.project.vscode, reuse_existing=False),
                           chrome=replace(self.project.chrome, reuse_existing=False, reopen_on_restore=False))
-        runner = FakeRunner({('tmux', 'has-session', '-t', 'work-demo'): (0, '')})
+        runner = FakeRunner({
+            ('tmux', 'has-session', '-t', '=work-demo'): (0, ''),
+            ('tmux', 'list-windows', '-t', '=work-demo', '-F', '#{window_name}:#{window_dead}'): (0, 'shell:0\ndev:0\n'),
+        })
         manager = WorkspaceManager(self.commands, runner, validate_executables=False)
         with patch('workspace_manager.extensions.ResolvedExtension.running', return_value=True):
             manager.reconcile(project)
@@ -278,7 +281,7 @@ class ManagerTests(unittest.TestCase):
             self.assertTrue(any(call[0] == command and '--new-window' in call for call in runner.mutations))
 
     @patch('workspace_manager.manager.DesktopNamesAdapter.switch_existing', return_value=True)
-    @patch('workspace_manager.manager.TerminalWindows.check_access')
+    @patch('workspace_manager.terminals.TerminalWindows.check_access')
     def test_focusing_existing_desktop_only_switches_even_without_terminal_access(self, access, switch):
         project = replace(self.project, space=SpaceConfig(enabled=True),
                           tmux=replace(self.project.tmux, presentation='windows', reuse_existing=False),
@@ -293,7 +296,7 @@ class ManagerTests(unittest.TestCase):
         self.assertEqual(runner.mutations, [])
 
     @patch('workspace_manager.manager.DesktopNamesAdapter.switch_existing', return_value=False)
-    @patch('workspace_manager.manager.TerminalWindows.check_access')
+    @patch('workspace_manager.terminals.TerminalWindows.check_access')
     def test_denied_terminal_access_precedes_setup_and_restart(self, access, switch):
         from workspace_manager.errors import WorkError
         access.side_effect = WorkError('Automation denied')
@@ -328,7 +331,7 @@ class ManagerTests(unittest.TestCase):
     def test_stop_removes_desktop_only_after_windows_close_and_services_stop(self, windows, adapter):
         events = []
         adapter.return_value.find.return_value = 'desktop-a'
-        windows.return_value.close_on_desktop.side_effect = lambda **kw: events.append('terminals' if kw['terminals'] else 'apps')
+        windows.return_value.close_on_desktop.side_effect = lambda **kw: events.append('terminals' if 'include_bundles' in kw else 'apps')
         windows.return_value.require_empty.side_effect = lambda: events.append('empty')
         adapter.return_value.remove.side_effect = lambda *args: events.append('remove')
         manager = WorkspaceManager(self.commands, FakeRunner(), validate_executables=False)
@@ -341,22 +344,22 @@ class ManagerTests(unittest.TestCase):
     def test_stop_without_dedicated_desktop_only_stops_project_services(self, windows, adapter):
         for space in (SpaceConfig(), SpaceConfig(enabled=True, target='current')):
             with self.subTest(space=space):
-                runner = FakeRunner({('tmux', 'has-session', '-t', 'work-demo'): (0, '')})
+                runner = FakeRunner({('tmux', 'has-session', '-t', '=work-demo'): (0, '')})
                 manager = WorkspaceManager(self.commands, runner, validate_executables=False)
                 manager.stop(replace(self.project, space=space))
-                self.assertEqual(runner.mutations, [('tmux', 'kill-session', '-t', 'work-demo')])
+                self.assertEqual(runner.mutations, [('tmux', 'kill-session', '-t', '=work-demo')])
         windows.assert_not_called()
         adapter.assert_not_called()
 
     @patch('workspace_manager.manager.DesktopNamesAdapter')
     @patch('workspace_manager.manager.ProjectWindows')
     def test_restart_stops_services_without_closing_windows_or_removing_desktop(self, windows, adapter):
-        runner = FakeRunner({('tmux', 'has-session', '-t', 'work-demo'): (0, '')})
+        runner = FakeRunner({('tmux', 'has-session', '-t', '=work-demo'): (0, '')})
         manager = WorkspaceManager(self.commands, runner, validate_executables=False)
         project = replace(self.project, space=SpaceConfig(enabled=True))
         with patch.object(manager, 'reconcile') as reconcile:
             self.assertEqual(manager.focus(project, restart=True, no_attach=True), 0)
-        self.assertEqual(runner.mutations, [('tmux', 'kill-session', '-t', 'work-demo')])
+        self.assertEqual(runner.mutations, [('tmux', 'kill-session', '-t', '=work-demo')])
         reconcile.assert_called_once_with(project, force_gui=False, assume_stopped=False, lock_held=True)
         windows.assert_not_called()
         adapter.return_value.find.assert_not_called()

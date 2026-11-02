@@ -52,17 +52,19 @@ class ConfigTests(unittest.TestCase):
 
         config = load_project("demo")
 
-        self.assertEqual(config.tmux.session, "focus-demo")
-        vscode, chrome = configured_apps(config)
+        services, vscode, chrome = configured_apps(config)
+        self.assertFalse(config.tmux.enabled)
+        self.assertEqual(services.extension, "tmux")
+        self.assertEqual(services.options["session"], "focus-demo")
         self.assertEqual(vscode.extension, "vscode")
         self.assertEqual(vscode.options["profile"], "Demo Profile")
         self.assertFalse(config.vscode.enabled)
         self.assertFalse(config.chrome.enabled)
-        for app in (config.tmux, vscode, chrome):
+        for app in (services, vscode, chrome):
             self.assertEqual(app.launch_mode, 'window')
             self.assertTrue(app.reuse_existing)
         self.assertEqual(chrome.options["urls"], ("http://localhost:3000",))
-        self.assertEqual(config.startup.command, "npm run dev")
+        self.assertEqual(services.options["startup_command"], "npm run dev")
         self.assertEqual(vscode.options["context"], str((self.project_root / "PROJECT.md").resolve()))
 
     def test_invalid_project_name_is_rejected(self) -> None:

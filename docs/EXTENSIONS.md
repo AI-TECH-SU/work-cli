@@ -1,13 +1,29 @@
-# Application extensions
+# Extension specifications
 
-An application extension is a TOML specification that tells Focus how to launch
-and identify an app. The project file selects the extension and supplies its
-options. The same engine interprets the bundled `vscode` and `chrome`
-specifications and local specifications for other apps.
+An extension is a TOML specification that declares how a provider behaves. The
+project selects it and supplies its options. Focus interprets bundled and local
+specifications through the same generic capabilities: `application` for GUI
+windows and `session` for service processes and terminal views. VS Code, Chrome,
+and tmux are bundled specifications, not special core resource types.
 
-For example, this project uses two extensions:
+For example, this project uses three extensions:
 
 ```toml
+[[apps]]
+name = "services"
+extension = "tmux"
+launch_mode = "window"
+reuse_existing = true
+
+[apps.options]
+session = "focus-my-project"
+presentation = "windows"
+
+[[apps.options.windows]]
+name = "api"
+root = "api"
+command = "npm run dev"
+
 [[apps]]
 name = "editor"
 extension = "vscode"
@@ -28,9 +44,9 @@ profile = "Profile 2"
 urls = ["http://localhost:3000"]
 ```
 
-`editor` and `browser` are user-chosen resource names. `vscode` and `chrome` select
-specification files. `workspace`, `profile`, `context`, and `urls` are inputs
-declared by those specifications. A different extension can declare different
+`services`, `editor`, and `browser` are user-chosen resource names. `tmux`,
+`vscode`, and `chrome` select specification files. The keys in `[apps.options]`
+and its child tables are inputs declared by those specifications. A different extension can declare different
 inputs without a Focus code change.
 
 The resource controls `enabled`, `launch_mode`, and `reuse_existing`; their
@@ -41,13 +57,17 @@ Those explicit rules require Desktop Names window inventory even when desktop
 management is disabled; a status probe cannot satisfy them.
 
 The core owns project desktops, verified window movement, saved window identity,
-locking, and cleanup. tmux and its Terminal service views remain core resources.
-Extensions do not replace that lifecycle or add Python handlers to it.
+locking, and cleanup. Capabilities provide reusable algorithms; specifications
+supply provider-specific commands, formats, ownership rules, input schemas, and
+dependency metadata. Selecting an extension does not dispatch to a Python handler
+for that provider. A project without a session resource neither creates a tmux
+session nor requires tmux installed.
 
 ## Bundled and local specifications
 
 The bundled specifications are ordinary package files:
 
+- [`tmux.toml`](../src/workspace_manager/extension_specs/tmux.toml) — session capability
 - [`vscode.toml`](../src/workspace_manager/extension_specs/vscode.toml)
 - [`chrome.toml`](../src/workspace_manager/extension_specs/chrome.toml)
 
@@ -122,10 +142,12 @@ guarantee a new window or independent app data. Focus verifies the resulting
 window and reports a failure if the app only activates an old one or matching
 is ambiguous. This example has not been live-tested against TextEdit.
 
-## Specification reference
+## Application specification reference
 
-Unknown fields, unknown project options, invalid types, and unsupported template
-tokens are rejected. Both launch modes must be declared.
+A GUI specification uses `kind = "application"` (the default). Unknown fields,
+unknown project options, invalid types, and unsupported template tokens are
+rejected. Both launch modes must be declared. Session specifications use the
+separate contract below.
 
 ### Identity and lifecycle fields
 
@@ -133,11 +155,12 @@ tokens are rejected. Both launch modes must be declared.
 | --- | --- |
 | `version` | Required; `1` |
 | `id` | Required; matches the specification filename |
+| `kind` | `application` (default) or `session`; selects a reusable capability, not a provider handler |
 | `bundle_id` | Required macOS bundle identity used for window inventory |
 | `detached` | Whether to start the launch command without waiting for its process to exit; default `false` |
 | `require_match` | Require a newly appeared window to satisfy the specification matcher; default `false` |
 | `adopt_single_on_desktop` | Allow adoption of the sole app window already on the target project desktop when no stronger match exists; default `false` |
-| `restore_on_fresh_boot` | Without desktop management, request a launch on a fresh tmux boot even if the status probe reports presence; default `false` |
+| `restore_on_fresh_boot` | Without desktop management, request launch on a fresh service-session boot, or the first launch of an app-only resource configuration in this macOS boot, even if its probe reports presence; default `false` |
 | `reopen_on_restore` | Without desktop management, whether to launch when the status probe reports absence during restoration; default `true` |
 | `reopen_on_restore_input` | Name of a declared boolean input that supplies the preceding policy per project |
 
@@ -288,15 +311,273 @@ without Desktop Names; with desktop management enabled, restoration still uses
 verified window inventory/movement. Probe presence is not proof of a visible
 window, healthy content, or correct desktop placement.
 
+For app-only projects, `restore_on_fresh_boot = true` uses a saved first-launch
+marker keyed by resource configuration identity and macOS boot. This gives a resource its initial
+launch after each reboot without requiring a service session. Subsequent reconciliation honors
+`reopen_on_restore = false`; an explicit repair still requests launch. The marker
+is written only after a successful launch request, never in dry-run. Unreadable
+launch state stops restoration to avoid duplicate requests. Dedicated-desktop
+cleanup clears the marker, including when the assigned desktop is already gone;
+service-only stop retains it because GUI apps remain open. The marker is launch
+bookkeeping, not a running-process or health signal.
+
+## Session specification reference
+
+`kind = "session"` selects the generic service-session capability. The bundled
+[`tmux.toml`](../src/workspace_manager/extension_specs/tmux.toml) is its complete
+reference. The project uses the same `[[apps]]`, `enabled`, `launch_mode`,
+`reuse_existing`, and `[apps.options]` structure as a GUI extension. The capability
+manages service lifetime and views; provider command names and arguments live in
+the specification.
+
+A session specification requires `version`, `id`, `kind`, `bundle_id`, `command`,
+`inputs`, `session`, and `operations`. `bundle_id` identifies the app used to
+present service views. Session specifications use operation arrays instead of
+GUI `launch`, `match`, and `status` tables.
+
+### Session inputs and mappings
+
+Input schemas use the scalar/path/list types above, plus `records`. A records
+input declares `[inputs.<name>.fields.<field>]` schemas and accepts an array of
+project tables such as `[[apps.options.windows]]`. Nested records are unsupported.
+A string input can declare `choices = [...]` or a regular-expression `pattern`;
+values must match the entire pattern. Unknown fields and duplicate service names
+are rejected. Path fields resolve against the project root.
+
+The `[session]` table names the inputs serving each role; these names are chosen
+by the specification, not hardcoded project keywords:
+
+| Mapping | Input type and purpose |
+| --- | --- |
+| `identity_input` | `string`; provider session identity; omitted value uses `focus-<project>-<resource>` |
+| `units_input` | `records`; fields must be `name` (required string), `root` (required/defaulted path), and optional `command` (string) |
+| `presentation_input` | `string`; resolved value is `current`, `windows`, or `none` |
+| `startup_command_input` | Optional `string`; additional project-rooted foreground command |
+| `startup_unit_input` | `string`; window name for that startup command |
+| `startup_check_input` | Optional `string`; project-rooted shell check, successful on exit 0 |
+
+`default_unit` names the initial interactive service when the units list is empty.
+`presentation = "none"` starts services without a client. `"current"` attaches the
+invoking terminal; `"windows"` requires the view declarations below. At most one
+enabled resource can attach the invoking terminal. Give each enabled session
+resource a distinct provider session identity. The base session name identifies
+the project-owned resource, so do not point it at an unrelated session.
+
+The bundled tmux inputs are `session`, `presentation`, `windows`,
+`startup_command`, `startup_window`, and `startup_check`. Defaults provide an
+interactive `shell` window and current-terminal presentation. Run service
+commands in the foreground: Focus does not track independently daemonized
+processes or external containers.
+
+The resource status is ready when `exists` succeeds and its configured startup
+is ready. If `startup_check` is set, its shell command must exit 0. Otherwise,
+a configured startup unit must appear alive in the unit inventory. No startup
+command means no additional startup requirement. This readiness feeds the
+resource's `apps` status and aggregate `booted` value; it does not inspect every
+service's application health.
+
+### Operations and output formats
+
+Each `[operations.<name>]` table contains an `argv` array with the same literal,
+conditional, and spread forms as GUI launch arrays. Commands execute directly;
+provider formats such as `#{window_name}` must escape braces as `#{{window_name}}`
+in the specification. Values supplied by the project are not reinterpreted as
+templates. Service `command` and startup/check options are the deliberate shell
+command boundary.
+
+| Required operation | Contract |
+| --- | --- |
+| `exists` | Read-only; exit 0 when the base session exists |
+| `create` | Create the base session with its first unit in `{unit_root}` |
+| `list_units` | Read-only; emit one row per unit using the declared inventory schema |
+| `create_unit` | Create `{unit}` in `{unit_root}` |
+| `retain_unit` | Keep a terminated unit's output available for diagnosis |
+| `start_unit` | Start `{unit_command}` or `{shell_command}` in the existing unit |
+| `stop` | Stop the base session and its foreground service processes |
+| `attach` | Attach the invoking terminal to the base session |
+
+`[session.inventory]` declares `separator`, `columns = ["name", "dead"]` (either
+order), and `dead_value`. Other values in the dead column mean running. Malformed
+rows are errors. The specification supplies any provider-specific format flags
+inside `list_units.argv`.
+
+`[session.attach]` can declare `switch_env`, an environment variable indicating
+that the invoking terminal is already inside the provider. That requires a
+`switch` operation, used instead of `attach` when the variable is set. Its
+`clear_env` list names variables to remove from new Terminal clients. The bundled
+tmux specification supplies `TMUX`; the capability does not assume that name.
+
+Session templates add these context tokens to the shared template context:
+
+| Token | Value |
+| --- | --- |
+| `{app}` | Resource name |
+| `{title_prefix}` | `<project> / <resource>`; legacy translated service resources retain `<project>` |
+| `{session}` | Resolved provider session identity |
+| `{unit}`, `{unit_root}` | Service name and absolute working directory |
+| `{unit_command}` | User's foreground command |
+| `{shell_command}` | Foreground command prefixed with `exec` |
+| `{shell}` | User's configured shell, falling back to `/bin/zsh` |
+| `{view}`, `{title}` | Resolved client-view identity and display title |
+| `{mode}` | Resource `launch_mode` |
+| `{digest}` | Stable service-name digest, available to the view identity template |
+
+### Optional independent client views
+
+A `[session.views]` declaration enables `presentation = "windows"`. It provides:
+
+- `identity` and `title` templates for each service view;
+- `inactive_values`, the output strings indicating no client is attached;
+- `modes`, the recorded client modes that may be reused;
+- `[session.views.inventory]` with `separator` and `columns = ["name", "owner"]`.
+
+It also requires these operation arrays:
+
+| Operations | Purpose |
+| --- | --- |
+| `view_exists`, `view_owner`, `view_attached`, `view_mode` | Read-only identity, ownership, attachment, and mode inspection |
+| `view_create`, `view_set_owner`, `view_select` | Create an independent view, mark its parent session, select its service |
+| `view_detach`, `view_attach`, `view_set_mode` | Control the view's client and record its presentation mode |
+| `view_list`, `view_stop` | Inventory and remove only views whose owner equals the base session |
+| `view_set_title`, `view_enable_title` | Supply the identifiable Terminal window title |
+
+Ownership keys, provider flags, output formats, and title-control commands belong
+in these arrays. The runtime compares the returned owner with `{session}` and
+refuses to reuse an unrelated view. `reuse_existing = false` creates an additional
+owned view of the same services; it does not duplicate the service processes.
+The common Terminal presenter opens and verifies the configured view. It supports
+the existing window/instance policies and permission checks; changing the session
+provider does not remove those macOS requirements.
+
+### Dependency metadata
+
+Session specifications may declare:
+
+```toml
+[install]
+manager = "homebrew"
+package = "tmux"
+```
+
+This is repair metadata for the provider executable, not an install hook.
+`focus doctor` checks enabled resources only. `focus doctor --fix` prints the
+exact install command and asks before running it; `--yes` is explicit approval
+for noninteractive repair. Normal focus and specification loading never install
+packages. An app-only project does not require an installed tmux executable.
+
+### Another session provider
+
+A local provider can use different input names and commands. For example,
+`extensions/team-session.toml` below defines the contract of an existing,
+user-supplied `team-session` executable. This is an authoring example, not a
+bundled executable or a claim that a package with this interface is installed:
+
+```toml
+version = 1
+id = "team-session"
+kind = "session"
+bundle_id = "com.apple.Terminal"
+
+[command]
+name = "team-session"
+
+[inputs.group]
+type = "string"
+required = true
+
+[inputs.display]
+type = "string"
+default = "none"
+choices = ["current", "none"]
+
+[inputs.jobs]
+type = "records"
+default = []
+[inputs.jobs.fields.name]
+type = "string"
+required = true
+[inputs.jobs.fields.root]
+type = "path"
+default = "{root}"
+[inputs.jobs.fields.command]
+type = "string"
+
+[inputs.start]
+type = "string"
+[inputs.start_name]
+type = "string"
+default = "dev"
+[inputs.check]
+type = "string"
+
+[session]
+identity_input = "group"
+units_input = "jobs"
+presentation_input = "display"
+startup_command_input = "start"
+startup_unit_input = "start_name"
+startup_check_input = "check"
+default_unit = "shell"
+
+[session.inventory]
+separator = "|"
+columns = ["name", "dead"]
+dead_value = "stopped"
+
+[operations.exists]
+argv = ["{command}", "exists", "{session}"]
+[operations.create]
+argv = ["{command}", "create", "{session}", "{unit}", "{unit_root}"]
+[operations.list_units]
+argv = ["{command}", "list-jobs", "{session}", "--format", "name|state"]
+[operations.create_unit]
+argv = ["{command}", "add-job", "{session}", "{unit}", "{unit_root}"]
+[operations.retain_unit]
+argv = ["{command}", "retain-output", "{session}", "{unit}"]
+[operations.start_unit]
+argv = ["{command}", "run-job", "{session}", "{unit}", "{shell_command}"]
+[operations.stop]
+argv = ["{command}", "stop", "{session}"]
+[operations.attach]
+argv = ["{command}", "attach", "{session}"]
+```
+
+Select it without changing Focus's Python code:
+
+```toml
+[[apps]]
+name = "background-services"
+extension = "team-session"
+
+[apps.options]
+group = "my-project"
+display = "none"
+
+[[apps.options.jobs]]
+name = "api"
+root = "api"
+command = "npm run dev"
+```
+
+The executable must implement the declared contracts, including foreground
+process ownership and the inventory format. This minimal specification omits
+independent views, so `display = "windows"` is unsupported. Use the bundled tmux
+specification as the reference when adding that capability.
+
 ## Compatibility and validation
 
-Existing `[vscode]`, `[chrome]`, and `[context]` sections are translated to the
-bundled extensions. When a project declares an `apps` list, omitted legacy
-sections do not add default applications. Explicit legacy sections still
-translate; enabling both forms for the same extension is an error. Files without
+Existing `[vscode]`, `[chrome]`, `[context]`, `[tmux]`, and `[startup]` sections
+are translated to the bundled extensions. When a project declares an `apps` list, omitted legacy
+sections do not add default applications or service sessions. Explicit legacy
+sections still translate; enabling both forms for the same extension is an error. Files without
 an `apps` key retain their existing defaults. `focus init` emits the new resource
 form; existing project files are not rewritten automatically. Valid legacy window
 bindings are upgraded without reopening the recorded windows.
+
+New configuration uses one resource list for GUI apps and services. To omit tmux,
+remove its entry or set `enabled = false`; do not leave an explicit legacy
+`[tmux]` or `[startup]` section that still requests it. An empty `apps = []` list
+requests no application or session resources.
 
 Plain `[[apps]]` entries with `bundle_id` remain supported for one-off use. They
 use literal `open`, `window_command`, and `instance_command` configuration rather
@@ -311,6 +592,6 @@ focus my-project --dry-run
 
 These checks validate configuration and executable availability without proving
 GUI behavior. Normal focus on an existing project desktop still only switches;
-use `--force-gui` for an intentional repair. The extension refactor and additional
-app examples still need live GUI acceptance tests. See
+use `--force-gui` for an intentional repair. The GUI/session extension refactors and additional
+provider examples still need live acceptance tests. See
 [verification status](HOW_IT_WORKS.md#verification-status).

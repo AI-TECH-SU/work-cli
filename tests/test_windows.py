@@ -113,6 +113,43 @@ class WindowsTests(unittest.TestCase):
         self.assertFalse(any(call[1] == 'move-window' for call in self.runner.calls))
         self.assertFalse(self.windows.path.exists())
 
+    def test_late_accessibility_metadata_does_not_make_an_old_chrome_window_new(self):
+        self.runner.rows = [window(46607, bundle=CHROME, title='')]
+        def launch():
+            self.runner.rows[0]['title'] = 'Existing personal browser window'
+        with patch('workspace_manager.windows.time.monotonic', side_effect=[0, 20]):
+            with self.assertRaisesRegex(WorkError, 'No new browser window appeared'):
+                self.windows.ensure('browser', CHROME, launch)
+        self.assertFalse(any(call[1] == 'move-window' for call in self.runner.calls))
+        self.assertFalse(self.windows.path.exists())
+
+    def test_existing_project_window_can_be_identified_after_launch_reveals_metadata(self):
+        self.runner.rows = [window(title=''), window(2, title='Unrelated workspace')]
+        def launch():
+            self.runner.rows[0]['title'] = window()['title']
+        self.windows.ensure('vscode', CODE, launch, self.matcher.matches)
+        self.assertEqual(self.runner.rows[0]['spaces'], ['target'])
+        self.assertEqual(self.runner.rows[1]['spaces'], ['elsewhere'])
+        self.assertEqual(json.loads(self.windows.path.read_text())['vscode']['id'], 1)
+
+    def test_late_matching_metadata_cannot_override_disabled_reuse(self):
+        self.runner.rows = [window(title='')]
+        def launch():
+            self.runner.rows[0]['title'] = window()['title']
+        with patch('workspace_manager.windows.time.monotonic', side_effect=[0, 20]):
+            with self.assertRaisesRegex(WorkError, 'No new vscode window appeared'):
+                self.windows.ensure('vscode', CODE, launch, self.matcher.matches, reuse_existing=False)
+        self.assertEqual(self.runner.rows[0]['spaces'], ['elsewhere'])
+
+    def test_late_matching_metadata_must_be_unambiguous(self):
+        self.runner.rows = [window(title=''), window(2, title='')]
+        def launch():
+            for row in self.runner.rows:
+                row['title'] = window()['title']
+        with self.assertRaisesRegex(WorkError, 'Several vscode windows match'):
+            self.windows.ensure('vscode', CODE, launch, self.matcher.matches)
+        self.assertTrue(all(row['spaces'] == ['elsewhere'] for row in self.runner.rows))
+
     def test_failed_new_window_move_retries_without_opening_another(self):
         self.runner.rows = []
         def open_window():
@@ -196,11 +233,11 @@ class WindowsTests(unittest.TestCase):
         sticky = window(4, space='target')
         sticky['spaces'].append('elsewhere')
         self.runner.rows.append(sticky)
-        self.windows.close_on_desktop(terminals=False)
+        self.windows.close_on_desktop(exclude_bundles=(TERMINAL,))
         self.assertEqual([row['id'] for row in self.runner.rows], [2, 3, 4])
         with self.assertRaisesRegex(WorkError, 'still contains'):
             self.windows.require_empty()
-        self.windows.close_on_desktop(terminals=True)
+        self.windows.close_on_desktop(include_bundles=(TERMINAL,))
         self.windows.require_empty()
         self.assertEqual([row['id'] for row in self.runner.rows], [2, 4])
 
@@ -226,7 +263,7 @@ class WindowsTests(unittest.TestCase):
         self.runner.dry_run = True
         launch = Mock()
         self.windows.ensure('vscode', CODE, launch, self.matcher.matches)
-        self.windows.close_on_desktop(terminals=False)
+        self.windows.close_on_desktop(exclude_bundles=(TERMINAL,))
         self.windows.require_empty()
         self.assertEqual(self.runner.calls, [])
         self.assertFalse(self.windows.path.exists())

@@ -1,0 +1,148 @@
+version = 1
+id = "tmux"
+kind = "session"
+bundle_id = "com.apple.Terminal"
+
+[command]
+key = "tmux"
+name = "tmux"
+candidates = ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux"]
+
+[install]
+manager = "homebrew"
+package = "tmux"
+
+[inputs.session]
+type = "string"
+pattern = '^[A-Za-z0-9][A-Za-z0-9_-]*$'
+
+[inputs.presentation]
+type = "string"
+default = "current"
+choices = ["current", "windows", "none"]
+
+[inputs.windows]
+type = "records"
+default = []
+
+[inputs.windows.fields.name]
+type = "string"
+required = true
+pattern = '^[^.:\r\n\t]+$'
+
+[inputs.windows.fields.root]
+type = "path"
+default = "{root}"
+must_exist = true
+path_kind = "directory"
+
+[inputs.windows.fields.command]
+type = "string"
+
+[inputs.startup_command]
+type = "string"
+
+[inputs.startup_window]
+type = "string"
+default = "dev"
+pattern = '^[^.:\r\n\t]+$'
+
+[inputs.startup_check]
+type = "string"
+
+[session]
+identity_input = "session"
+units_input = "windows"
+presentation_input = "presentation"
+startup_command_input = "startup_command"
+startup_unit_input = "startup_window"
+startup_check_input = "startup_check"
+default_unit = "shell"
+
+[session.inventory]
+separator = ":"
+columns = ["name", "dead"]
+dead_value = "1"
+
+[session.attach]
+switch_env = "TMUX"
+clear_env = ["TMUX"]
+
+[session.views]
+identity = "{session}-view-{digest}"
+title = "{title_prefix} / {unit}"
+inactive_values = ["", "0"]
+modes = ["window", "instance"]
+
+[session.views.inventory]
+separator = "\t"
+columns = ["name", "owner"]
+
+[operations.exists]
+argv = ["{command}", "has-session", "-t", "={session}"]
+
+[operations.create]
+argv = ["{command}", "new-session", "-d", "-s", "{session}", "-n", "{unit}", "-c", "{unit_root}"]
+
+[operations.list_units]
+argv = ["{command}", "list-windows", "-t", "={session}", "-F", "#{{window_name}}:#{{window_dead}}"]
+
+[operations.create_unit]
+argv = ["{command}", "new-window", "-d", "-t", "={session}", "-n", "{unit}", "-c", "{unit_root}"]
+
+[operations.retain_unit]
+argv = ["{command}", "set-window-option", "-t", "={session}:{unit}", "remain-on-exit", "on"]
+
+[operations.start_unit]
+argv = ["{command}", "respawn-pane", "-k", "-t", "={session}:{unit}", "-c", "{unit_root}", "{shell}", "-lc", "{shell_command}"]
+
+[operations.stop]
+argv = ["{command}", "kill-session", "-t", "={session}"]
+
+[operations.attach]
+argv = ["{command}", "attach-session", "-t", "={session}"]
+
+[operations.switch]
+argv = ["{command}", "switch-client", "-t", "={session}"]
+
+[operations.view_exists]
+argv = ["{command}", "has-session", "-t", "={view}"]
+
+[operations.view_owner]
+argv = ["{command}", "show-options", "-v", "-t", "{view}", "@focus-parent"]
+
+[operations.view_attached]
+argv = ["{command}", "display-message", "-p", "-t", "{view}", "#{{session_attached}}"]
+
+[operations.view_mode]
+argv = ["{command}", "show-options", "-v", "-t", "{view}", "@focus-terminal-mode"]
+
+[operations.view_create]
+argv = ["{command}", "new-session", "-d", "-s", "{view}", "-t", "={session}"]
+
+[operations.view_set_owner]
+argv = ["{command}", "set-option", "-t", "{view}", "@focus-parent", "{session}"]
+
+[operations.view_select]
+argv = ["{command}", "select-window", "-t", "{view}:{unit}"]
+
+[operations.view_detach]
+argv = ["{command}", "detach-client", "-s", "{view}"]
+
+[operations.view_attach]
+argv = ["{command}", "attach-session", "-t", "{view}"]
+
+[operations.view_set_mode]
+argv = ["{command}", "set-option", "-t", "{view}", "@focus-terminal-mode", "{mode}"]
+
+[operations.view_list]
+argv = ["{command}", "list-sessions", "-F", "#{{session_name}}\t#{{@focus-parent}}"]
+
+[operations.view_stop]
+argv = ["{command}", "kill-session", "-t", "={view}"]
+
+[operations.view_enable_title]
+argv = ["{command}", "set-option", "-t", "{view}", "set-titles", "on"]
+
+[operations.view_set_title]
+argv = ["{command}", "set-option", "-t", "{view}", "set-titles-string", "{title}"]

@@ -13,6 +13,14 @@ class CommandConfig:
 
 
 @dataclass(frozen=True)
+class FollowAppConfig:
+    name: str
+    bundle_id: str
+    enabled: bool = True
+    match_title: str | None = None
+
+
+@dataclass(frozen=True)
 class TmuxWindowConfig:
     name: str
     root: Path
@@ -26,6 +34,7 @@ class TmuxConfig:
     presentation: str = "current"
     launch_mode: str = "window"
     reuse_existing: bool = True
+    enabled: bool = True
 
 
 @dataclass(frozen=True)
@@ -107,12 +116,13 @@ class ProjectConfig:
 @dataclass(frozen=True)
 class WorkspaceStatus:
     project: str
-    tmux: bool
+    tmux: bool | None
     startup: bool | None
     vscode: bool | None
     chrome: bool | None
     apps: dict[str, bool | None] = field(default_factory=dict)
+    resources_ready: bool | None = None
 
     @property
     def booted(self) -> bool:
-        return self.tmux
+        return self.resources_ready if self.resources_ready is not None else bool(self.tmux)

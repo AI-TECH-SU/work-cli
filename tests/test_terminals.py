@@ -24,7 +24,7 @@ class Runner:
         self.mutations = []
         self.automation_allowed = True
 
-    def capture(self, command):
+    def capture(self, command, *, cwd=None):
         if command[0] == '/usr/bin/osascript':
             if not self.automation_allowed:
                 return subprocess.CompletedProcess(command, 1, '', 'Not authorized (-1743)')
@@ -45,7 +45,7 @@ class Runner:
         elif action == 'list-sessions': value = '\n'.join(name+'\t'+row['owner'] for name, row in self.groups.items())
         return subprocess.CompletedProcess(command, code, value, '')
 
-    def mutate(self, command):
+    def mutate(self, command, *, cwd=None):
         self.mutations.append(command)
         if command[0] == '/usr/bin/open':
             self.opened.append(command)
@@ -187,3 +187,45 @@ class TerminalWindowTests(unittest.TestCase):
             TerminalWindows('tmux', runner).check_access()
         self.assertEqual(runner.mutations, [])
         self.assertEqual(runner.opened, [])
+
+
+class TerminalTitleRegressionTests(unittest.TestCase):
+    def test_custom_title_matches_with_terminal_prefix_and_suffix(self):
+        expected = 'wellprept-foundation / services / api'
+        for actual in (expected, expected + ' — tmux — 230×40',
+                       'aialec — ' + expected + ' — tmux attach-session -t session — 230×40'):
+            self.assertTrue(TerminalWindows.matches_title(actual, expected))
+        for actual in ('other — api — tmux', expected + '-other — tmux',
+                       'not-' + expected, 'shell command mentioning ' + expected):
+            self.assertFalse(TerminalWindows.matches_title(actual, expected))
+
+    @patch('workspace_manager.terminals.terminal_automation_permission', return_value=0)
+    def test_live_title_shape_is_found_on_creation_and_reused_on_retry(self, permission):
+        from workspace_manager.windows import ProjectWindows
+        from tests.test_windows import WindowRunner, window, TERMINAL
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, XDG_STATE_HOME=temporary):
+            root = Path(temporary)
+            project = ProjectConfig('demo', root,
+                                    TmuxConfig('demo', (TmuxWindowConfig('api', root),), 'windows'),
+                                    VSCodeConfig(False), ChromeConfig(False), ContextConfig(None, False),
+                                    StartupConfig(), root / 'demo.toml')
+            runner = Runner()
+            inventory = WindowRunner([])
+            windows = ProjectWindows('desktop-names', inventory, project, 'target')
+            capture = runner.capture
+            def open_and_report(command, **kwargs):
+                result = capture(command, **kwargs)
+                if command[0] == '/usr/bin/osascript':
+                    inventory.rows.append(window(55653, bundle=TERMINAL,
+                        title='aialec — ' + command[-1] + ' — tmux attach-session -t demo — 230×40'))
+                return result
+            runner.capture = open_and_report
+            terminal = TerminalWindows('tmux', runner)
+            terminal.open(project, windows=windows)
+            self.assertEqual(inventory.rows[0]['spaces'], ['target'])
+            # Reproduce the user's failed first attempt: attached client, but
+            # no binding was saved because the old matcher rejected its title.
+            windows.path.unlink()
+            terminal.open(project, windows=windows)
+            self.assertEqual(len(runner.opened), 1)
+            self.assertTrue(windows.path.exists())

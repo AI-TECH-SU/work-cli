@@ -42,16 +42,21 @@ class ExtensionConfigTests(unittest.TestCase):
             context=self.root / "AGENT.md", startup="npm run dev", desktop=True,
         )
         data = tomllib.loads(text)
-        self.assertTrue({"vscode", "chrome", "context"}.isdisjoint(data))
-        self.assertEqual([app["extension"] for app in data["apps"]], ["vscode", "chrome"])
+        self.assertTrue({"vscode", "chrome", "context", "tmux", "startup"}.isdisjoint(data))
+        self.assertEqual([app["extension"] for app in data["apps"]], ["tmux", "vscode", "chrome"])
         self.assertEqual(data["apps"][0]["options"], {
+            "session": "focus-demo", "presentation": "current", "startup_window": "dev",
+            "startup_command": "npm run dev",
+        })
+        self.assertEqual(data["apps"][1]["options"], {
             "workspace": "Demo.code-workspace", "profile": "Demo", "context": "AGENT.md",
         })
         (self.directory / "demo.toml").write_text(text, encoding="utf-8")
         project = load_project("demo")
         self.assertFalse(project.vscode.enabled)
         self.assertFalse(project.chrome.enabled)
-        self.assertEqual(len(configured_apps(project)), 2)
+        self.assertFalse(project.tmux.enabled)
+        self.assertEqual(len(configured_apps(project)), 3)
         self.assertTrue(project.space.enabled)
 
     def test_generated_disabled_browser_stays_disabled(self) -> None:
@@ -60,7 +65,8 @@ class ExtensionConfigTests(unittest.TestCase):
             chrome_profile=None, urls=[], context=None, startup=None,
         )
         (self.directory / "demo.toml").write_text(text, encoding="utf-8")
-        vscode, chrome = configured_apps(load_project("demo"))
+        services, vscode, chrome = configured_apps(load_project("demo"))
+        self.assertTrue(services.enabled)
         self.assertTrue(vscode.enabled)
         self.assertFalse(chrome.enabled)
 
@@ -96,6 +102,7 @@ profile = "Profile 2"
 urls = ["https://example.test"]
 reopen_on_restore = false
 '''))
+        legacy = tuple(app for app in legacy if app.extension != "tmux")
         for old, new in zip(legacy, explicit):
             with self.subTest(app=old.name):
                 self.assertEqual(old.options, new.options)
@@ -109,13 +116,14 @@ reopen_on_restore = false
         for settings in ('[context]\nopen_in_vscode = false',
                          '[vscode]\nworkspace = "PROJECT.md"\n[context]\npath = "PROJECT.md"'):
             with self.subTest(settings=settings):
-                app = configured_apps(self.load(settings))[0]
+                app = next(app for app in configured_apps(self.load(settings)) if app.extension == "vscode")
                 self.assertIsNone(app.options["context"])
 
     def test_explicit_apps_list_suppresses_all_implicit_defaults(self) -> None:
         project = self.load('[[apps]]\nname = "editor"\nextension = "vscode"')
         self.assertFalse(project.vscode.enabled)
         self.assertFalse(project.chrome.enabled)
+        self.assertFalse(project.tmux.enabled)
         self.assertEqual([app.name for app in configured_apps(project)], ["editor"])
         self.assertEqual(project.apps[0].options["workspace"], str(self.root.resolve()))
 

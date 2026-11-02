@@ -27,7 +27,7 @@ class AppsCliTests(unittest.TestCase):
     def setUp(self) -> None:
         self.commands = CommandConfig("tmux", "code", "chrome", "desktop-names")
         self.project = ProjectConfig(
-            name="demo", root=Path("/projects/demo"), tmux=TmuxConfig("demo"),
+            name="demo", root=Path("/projects/demo"), tmux=TmuxConfig("demo", enabled=False),
             vscode=VSCodeConfig(enabled=False), chrome=ChromeConfig(enabled=False),
             context=ContextConfig(), startup=StartupConfig(), source=Path("/config/demo.toml"),
             apps=(AppConfig("notes", "com.example.Notes"),),
@@ -96,11 +96,10 @@ class AppsCliTests(unittest.TestCase):
         self.assertEqual(checked.count("code"), 1)
         self.assertEqual(checked.count("chrome"), 1)
 
-    def test_doctor_without_projects_preserves_builtin_checks(self):
+    def test_doctor_without_projects_requires_no_extension_commands(self):
         result, output, checked = self.doctor({}, unavailable=("code",))
-        self.assertEqual(result, 1)
-        self.assertIn("code", checked)
-        self.assertIn("chrome", checked)
+        self.assertEqual(result, 0)
+        self.assertEqual(checked, [])
         self.assertIn("no projects configured", output)
 
     def test_invalid_project_does_not_hide_other_project_checks(self):

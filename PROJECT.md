@@ -28,11 +28,13 @@ project's working context with one command: `focus <project>`.
   applies when a new window is needed. With reuse disabled, leave old windows in
   place, identify the new one, and fail if the app reuses an old window instead.
 - Model applications as `[[apps]]` resources with optional declarative TOML
-  extension specifications. Ship VS Code and Chrome as specifications interpreted
-  by the same engine as user extensions. Keep app defaults, options, launch,
-  detection, and matching rules in those specifications; do not dispatch to
-  app-specific Python handlers. Translate legacy sections into the same resource
-  model. Keep Desktop Names lifecycle and tmux service views in the core.
+  extension specifications. Ship VS Code, Chrome, and tmux as specifications
+  interpreted by generic GUI and session capabilities. Keep provider commands,
+  formats, ownership keys, environment rules, inputs, matching, and dependency
+  metadata in those specifications; do not dispatch to provider-specific Python
+  handlers. Translate legacy sections into the same resource model. The core owns
+  desktop/project orchestration and reusable capabilities. An explicit app list
+  must not create an implicit tmux session or require an unused provider.
 - Allow direct bundle identity, launch arguments, and matching rules for apps
   without a reusable extension. Adopt their existing windows only from saved
   identity or explicit rules; do not infer ownership from an app bundle. Verify
@@ -45,12 +47,12 @@ project's working context with one command: `focus <project>`.
 ## V1 resources
 
 - bundled VS Code extension: workspace/folder, profile, and context document
-- tmux session with optional project-rooted windows
+- bundled tmux extension: optional session, service windows, and Terminal views
 - bundled Chrome extension: profile and configured URLs
 - local application extension specifications
 - direct macOS application resources, documents/URLs, and launch/reuse rules
 - project `PROJECT.md`
-- optional development startup command
+- optional foreground service commands declared by session extensions
 
 ## Core behavior
 
@@ -61,7 +63,7 @@ desktop. Keep the original VS Code workspace and profile; do not copy workspace
 descriptors for window placement.
 
 `focus stop <project>` closes windows exclusively on that desktop, stops its
-tmux services, and removes the now-empty desktop and assignment. Never terminate
-a shared app process or close its other desktops' windows. Honor save/close
+configured service sessions, and removes the now-empty desktop and assignment.
+Never terminate a shared app process or close its other desktops' windows. Honor save/close
 prompts and retain the desktop on failure. Without a dedicated project desktop,
 stop only the project's services. `focus restart` keeps its desktop and windows.

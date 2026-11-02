@@ -15,6 +15,7 @@ from workspace_manager.config import (
     default_commands,
     list_project_names,
     load_commands,
+    load_follow_apps,
     load_project,
     render_global_config,
     render_project_config,
@@ -80,7 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument(
         "--fix",
         action="store_true",
-        help="offer to install a missing tmux dependency with Homebrew",
+        help="offer to install missing dependencies declared by enabled extensions",
     )
     doctor.add_argument(
         "--yes",
@@ -269,48 +270,28 @@ def find_homebrew() -> str | None:
     return None
 
 
-def repair_tmux(*, tmux_command: str, assume_yes: bool) -> str | None:
-    if executable_exists(tmux_command):
-        return tmux_command
+def repair_dependency(*, command: str, package: str, assume_yes: bool) -> bool:
+    if executable_exists(command):
+        return True
     brew = find_homebrew()
     if brew is None:
-        raise WorkError(
-            "tmux is missing and Homebrew was not found; install Homebrew from "
-            "https://brew.sh, then rerun 'focus doctor --fix'"
-        )
+        raise WorkError("Homebrew was not found; install the declared dependency yourself, "
+                        "or install Homebrew and rerun 'focus doctor --fix'")
+    operation = (brew, "install", package)
     if not assume_yes:
         if not sys.stdin.isatty():
             raise WorkError("dependency installation needs confirmation; rerun with --fix --yes")
-        if not _yes_no("Install tmux with Homebrew now?", True):
-            print("info tmux installation skipped")
-            return None
-    if CommandRunner().mutate((brew, "install", "tmux")) != 0:
-        raise WorkError("Homebrew failed to install tmux")
-    resolved_tmux = tmux_command
-    tmux_available = executable_exists(resolved_tmux)
-    if not tmux_available:
-        resolved_tmux = default_commands().tmux
-        tmux_available = executable_exists(resolved_tmux)
-    if not tmux_available:
-        raise WorkError(
-            "Homebrew installed tmux, but the configured tmux command is still unavailable; "
-            f"update the tmux path in {global_config_path()}"
-        )
-    print("ok  installed tmux with Homebrew")
-    return resolved_tmux
+        if not _yes_no(f"Run {shlex.join(operation)}?", True):
+            print(f"info installation of {package!r} skipped")
+            return False
+    if CommandRunner().mutate(operation) != 0:
+        raise WorkError(f"Homebrew failed to install {package!r}")
+    print(f"ok  installed {package!r} with Homebrew")
+    return True
 
 
 def command_doctor(*, fix: bool = False, assume_yes: bool = False) -> int:
     commands = load_commands()
-    if fix and not executable_exists(commands.tmux):
-        repaired_tmux = repair_tmux(tmux_command=commands.tmux, assume_yes=assume_yes)
-        if repaired_tmux:
-            commands = CommandConfig(
-                tmux=repaired_tmux,
-                code=commands.code,
-                chrome=commands.chrome,
-                desktop_names=commands.desktop_names,
-            )
     names = list_project_names()
     projects = {}
     configuration_errors = {}
@@ -322,16 +303,13 @@ def command_doctor(*, fix: bool = False, assume_yes: bool = False) -> int:
     checks = [
         (sys.platform == "darwin", f"platform is macOS (found {sys.platform})"),
         (sys.version_info >= (3, 11), f"Python is 3.11+ (found {sys.version.split()[0]})"),
-        (executable_exists(commands.tmux), f"tmux executable: {commands.tmux}"),
     ]
-    if not names:
-        checks.append((executable_exists(commands.code), f"VS Code executable: {commands.code}"))
-        checks.append((executable_exists(commands.chrome), f"Chrome executable: {commands.chrome}"))
     failed = False
     for ok, message in checks:
         print(f"{'ok ' if ok else 'ERR'} {message}")
         failed = failed or not ok
 
+    repaired_packages: set[str] = set()
     for name in names:
         if name in configuration_errors:
             print(f"ERR project configuration {name}: {configuration_errors[name]}")
@@ -340,6 +318,20 @@ def command_doctor(*, fix: bool = False, assume_yes: bool = False) -> int:
         project = projects[name]
         try:
             apps = ConfiguredApps(commands.desktop_names, CommandRunner(), project, commands=commands)
+            if fix:
+                for resource in apps.resources:
+                    extension = resource.extension
+                    if not resource.app.enabled or extension is None:
+                        continue
+                    installer = extension.spec.data.get("install")
+                    if not installer or executable_exists(extension.executable):
+                        continue
+                    package = installer["package"]
+                    if package not in repaired_packages:
+                        repair_dependency(command=extension.executable, package=package, assume_yes=assume_yes)
+                        repaired_packages.add(package)
+                commands = load_commands()
+                apps = ConfiguredApps(commands.desktop_names, CommandRunner(), project, commands=commands)
             required = apps.required_commands()
         except WorkError as exc:
             print(f"ERR project configuration {name}: {exc}")
@@ -378,7 +370,7 @@ def run(argv: list[str] | None = None) -> int:
 
     project = load_project(args.project)
     runner = CommandRunner(dry_run=args.dry_run)
-    manager = WorkspaceManager(load_commands(), runner)
+    manager = WorkspaceManager(load_commands(), runner, follow_apps=load_follow_apps())
     if args.command == "stop":
         manager.stop(project)
         return 0

@@ -1,11 +1,11 @@
 # How Focus works
 
-Focus reads a named TOML project and coordinates three local components:
+Focus reads a named TOML project and coordinates local resources:
 
 | Component | Responsibility |
 | --- | --- |
 | Focus CLI (`focus`, or compatible `work`) | Project configuration, extension interpretation, service reconciliation, window matching, saved assignments, operation locks |
-| tmux | Foreground service processes, retained output, independent Terminal views |
+| Extension providers, such as tmux, VS Code, and Chrome | Behavior declared in bundled/local specifications; tmux provides optional foreground service sessions and Terminal views |
 | Desktop Names | macOS desktop names/UUIDs, desktop creation/switching/removal, window inventory/move/close |
 
 There is no Focus daemon, cloud account, or synchronization service. The custom
@@ -22,10 +22,9 @@ For a project with `[space] enabled = true` and `target = "project"`:
    reopened, services restarted, or Terminal clients attached on this path.
 3. Otherwise, check required launch permissions, paths, and executables. Create
    a regular desktop, save its UUID, switch to it, and give it the project name.
-4. Create/reuse the tmux session and configured service windows, then restore
-   enabled `[[apps]]` resources using existing project windows where they can be
-   identified. VS Code and Chrome are bundled extension specifications in this
-   same resource list.
+4. Restore enabled `[[apps]]` resources. Session extensions reconcile their
+   services; GUI extensions reuse identifiable project windows or open new ones.
+   tmux, VS Code, and Chrome are bundled specifications in this same resource list.
 5. Open/reuse the configured Terminal views and verify window desktop membership.
    Return to the project desktop after application launches.
 
@@ -55,7 +54,8 @@ after a reboot. If that window is gone, it searches for a unique project match:
   project ownership. This fallback is disabled with explicit resource matchers or
   multiple enabled resources for the same bundle. An existing window is reused
   without resetting its tabs.
-- **Terminal:** an owned tmux view and its project/service window title.
+- **Bundled `tmux` specification:** an owned session view and its project/service
+  Terminal window title, using the provider's declared identity and ownership rules.
 - **Direct bundle entries:** a recorded identity or a unique match for the entry's
   `match_title`/`match_document` rules within its bundle ID. Both rules must match
   when both are present. There is no adoption based only on an app bundle.
@@ -83,28 +83,28 @@ Window movement uses a macOS private operation resolved at runtime. Fullscreen
 and all-desktop windows cannot be moved by this adapter; unsupported operations
 fail explicitly. This behavior needs validation on the actual macOS version.
 
-## Applications and extension specifications
+## Resources and extension specifications
 
-Every `[[apps]]` entry is an application resource. It can select a reusable TOML
-specification with `extension`, or declare its bundle identity and launch details
-directly. The bundled `vscode` and `chrome` specifications use the same loader and
-interpreter as a local extension. Focus does not dispatch to a Python application
-handler based on the extension ID.
+Every `[[apps]]` entry is a resource. It can select a reusable TOML specification
+with `extension`, or declare a GUI app's bundle identity and launch details
+directly. The bundled `tmux`, `vscode`, and `chrome` specifications use the same
+loader and capability interpreters as local extensions. Focus does not dispatch
+to a provider-specific Python handler based on the extension ID.
 
-A specification declares its option schema/defaults, bundle ID, executable
-discovery, launch argument templates, window matcher, and optional status probes.
-The project supplies values in `[apps.options]` and controls launch/reuse policy.
-Supported matcher primitives include workspace title/document rules, exact
-document values, and globs. Desktop selection, verified window movement, saved
-identity, and cleanup remain common lifecycle operations. Terminal service views
-remain part of tmux orchestration. See [Application extensions](EXTENSIONS.md) for
-the specification contract.
+A GUI specification declares option schema/defaults, bundle identity, executable
+discovery, launch templates, matching, and optional status probes. A session
+specification declares commands for service and view operations, their output
+formats, ownership keys, and environment handling. Generic capabilities interpret
+these declarations; the core keeps project/desktop orchestration, verified
+movement, identity, locks, and cleanup. The project supplies `[apps.options]`
+values and launch/reuse policy. See [Extension specifications](EXTENSIONS.md) for
+the provider contracts.
 
-Existing `[vscode]`, `[chrome]`, and `[context]` sections are translated into
-extension resources. They do not keep a separate launch path. New initialization
+Existing `[vscode]`, `[chrome]`, `[context]`, `[tmux]`, and `[startup]` sections
+are translated into extension resources. They do not keep a separate launch path. New initialization
 uses `[[apps]]`; migration is optional. With an `apps` list present, omitted
-legacy sections add no default applications. Explicit legacy sections still
-translate, and conflicting enabled declarations are rejected. Files without an
+legacy sections add no default applications or tmux session. Explicit legacy
+sections still translate, and conflicting enabled declarations are rejected. Files without an
 `apps` key retain their original defaults. Valid legacy window bindings are
 upgraded to the extension identity format without reopening their windows.
 
@@ -128,7 +128,7 @@ URLs, and isolation flags belong in that command; combining it with `open` is re
 
 All desktop-managed app resources use Desktop Names to identify and verify their
 windows. Without desktop management, an extension can use its declared status
-probe for reconciliation. Direct entries and extensions without a probe still
+probe for reconciliation. Direct entries and GUI extensions without a probe still
 use Desktop Names inventory, but do not move windows. Explicit app-level title
 or document rules also require inventory instead of a probe. A probe can report process
 or workspace presence without proving a visible window; its signal is defined
@@ -137,7 +137,7 @@ services-only operation and leaves application windows open.
 
 ## Services and Terminal views
 
-Each `[[tmux.windows]]` entry runs in its configured directory. Its command runs
+For `extension = "tmux"`, each `[[apps.options.windows]]` entry runs in its configured directory. Its command runs
 once when that service window is created. Missing windows are restored by repair;
 dead service windows keep their output for diagnosis and need `focus restart`
 after fixing the underlying problem.
@@ -150,9 +150,10 @@ When reuse is disabled, a new client gets a separate owned view without detachin
 or changing the existing client's selection; the underlying services are not duplicated.
 
 With `presentation = "current"`, the invoking terminal attaches to the base tmux
-session. Closing a client does not by itself mean its underlying service stopped.
-Focus manages the tmux sessions it owns; it does not supervise arbitrary external
-daemons or containers.
+session. With `presentation = "none"`, services start without Terminal clients.
+Closing a client does not by itself mean its underlying service stopped.
+The session capability manages resources owned through the provider specification;
+it does not supervise arbitrary external daemons or containers.
 
 ## Stop: desktop cleanup
 
@@ -161,7 +162,7 @@ daemons or containers.
 1. Find the assigned desktop without creating one, and switch to it.
 2. Close standard non-Terminal application windows exclusively on that desktop,
    using each application's Close button. Verify each window disappears.
-3. Stop the project's owned tmux views and base service session.
+3. Stop the project's configured session resources and owned service views.
 4. Close remaining Terminal windows on that desktop and verify it is empty.
 5. Switch away as necessary, remove the desktop through Mission Control, and
    verify its UUID is absent. Only then clear the saved assignments.
@@ -188,15 +189,24 @@ removed. The next focus can create the project desktop again.
 | `focus <project> --force-gui` | Reconcile missing services/windows using existing windows first |
 | `focus restart <project>` | Stop services internally, then reconcile resources while retaining the desktop and app windows |
 | `focus stop <project>` | Close dedicated-desktop windows, stop services, and remove the desktop |
-| Stop with desktop management disabled or `target = "current"` | Stop only the project's tmux services/views |
+| Stop with desktop management disabled or `target = "current"` | Stop only the project's configured service sessions/views |
 
 Without a dedicated project desktop, normal invocation uses the original resource
 reconciliation flow. `target = "current"` explicitly names the current desktop
 on restoration. With desktop management disabled, extensions that use status
 probes can have less precise detection; for example, `--force-gui` can open
-additional GUI windows. Direct bundle entries and extensions without probes
+additional GUI windows. Direct bundle entries and GUI extensions without probes
 still verify window identity through Desktop Names, without moving windows.
 Switch-only behavior requires a dedicated project desktop.
+
+In an app-only project, a probe-based extension with `restore_on_fresh_boot = true`
+uses a first-launch marker tied to its configuration identity and macOS boot. It can launch
+initially after each reboot without an implicit service session; later restoration still honors
+`reopen_on_restore = false`. The marker is written after a successful launch
+request, never in dry-run; an unreadable marker stops restoration. Dedicated
+desktop cleanup clears it, including when the desktop is already gone, while
+service-only stop retains it. It records launch bookkeeping, not window presence
+or health.
 
 ## Configuration and saved state
 
@@ -207,6 +217,7 @@ Switch-only behavior requires a dedicated project desktop.
 | Local extension specifications | `~/.config/focus/extensions/<extension>.toml` |
 | Project → desktop UUID | `~/.local/state/focus/desktops/<project>.json` |
 | Resource → window identity | `~/.local/state/focus/windows/<project>.json` |
+| App-only probe resource first-launch markers | `~/.local/state/focus/resources/<project>.json` |
 | Extension instance data | `~/.local/state/focus/extensions/<extension>/<project>/<resource>/` |
 | Legacy VS Code / Chrome instance data | `~/.local/state/focus/vscode/<project>/`, `~/.local/state/focus/chrome/<project>/` |
 | Terminal instance command documents | `~/.local/state/focus/terminal-launchers/<project>/` |
@@ -239,13 +250,29 @@ Evidence as of **2026-10-04**:
   need a full live launch test. Do not infer their success from the stop test.
 - Per-app launch/reuse policies are covered by automated checks; the new instance
   modes have not been launched against real GUI apps as part of their implementation.
-- Additional `[[apps]]` integrations and the extension refactor have not yet been
+- Additional `[[apps]]` integrations and the GUI/session extension refactors have not yet been
   live-tested with GUI apps; actual launch behavior depends on each app's support
   for the configured command.
 
-`focus status` reports tmux, startup, and app-detection signals, including a
-read-only `apps` map keyed by app resource name in JSON output. For direct entries,
-the signal is an identified window; an extension can supply a status probe. Its `booted` value
-means the tmux session exists; it does not certify service health, open URLs,
+`focus status` reports a read-only `apps` map keyed by resource name in JSON
+output. GUI resources report identified windows or their declared status probes;
+session resources require the provider session to exist and any configured
+startup to be ready. A declared `startup_check` must exit 0; without a check, a
+configured startup unit must exist and be alive. Without a startup command,
+provider session existence is sufficient. The aggregate `booted` value is true
+when at least one resource is enabled and all enabled resources report ready.
+No tmux session is required for an app-only project. Legacy top-level `tmux` and
+`startup` JSON fields remain for compatibility: they separately report session
+existence and startup readiness, and are `null` when absent.
+These signals do not certify health beyond a configured startup check, open URLs,
 Terminal visibility, or desktop placement. See the dated
 [implementation/validation log](IMPLEMENTATION_PLAN.md) for detailed evidence.
+
+### Shared apps on workspace switches
+
+Global `[[follow_apps]]` entries move matching open windows even on the fast
+existing-desktop switch path. They use Desktop Names inventory and confirmed
+moves, create no project window bindings, and never launch an application.
+Desktop-disabled projects do not move shared apps. During dedicated desktop
+cleanup, matching shared windows are moved to another regular desktop first;
+move failures stop cleanup. See [setup](SETUP.md#apps-that-follow-every-workspace-switch).

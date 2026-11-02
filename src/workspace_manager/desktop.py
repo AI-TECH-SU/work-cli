@@ -29,6 +29,13 @@ class DesktopNamesAdapter:
         target = self._existing(project, rows, saved)
         return target["uuid"] if target else None
 
+    def other_desktop(self, project: ProjectConfig, excluding: str) -> str:
+        rows, _ = self._read(project, self.binding_path(project))
+        candidates = [row for row in rows if row["regular"] and row["uuid"] != excluding]
+        if not candidates:
+            raise WorkError("No other regular desktop is available to preserve follow_apps; desktop kept")
+        return next((row["uuid"] for row in candidates if row["active"]), candidates[0]["uuid"])
+
     def switch_existing(self, project: ProjectConfig) -> bool:
         if self.runner.dry_run or project.space.target != "project":
             return False

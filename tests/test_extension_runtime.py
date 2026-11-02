@@ -129,7 +129,7 @@ class ExtensionRuntimeTests(unittest.TestCase):
                 patch("workspace_manager.cli.executable_exists", return_value=True) as exists, \
                 patch("workspace_manager.cli.sys.platform", "darwin"), patch("sys.stdout", new_callable=StringIO):
             self.assertEqual(command_doctor(), 0)
-        self.assertEqual([call.args[0] for call in exists.call_args_list], ["tmux", "desktop-names", "/usr/bin/open"])
+        self.assertEqual([call.args[0] for call in exists.call_args_list], ["desktop-names", "/usr/bin/open"])
 
     def test_explicit_matcher_prevents_loose_desktop_adoption_from_spec(self):
         # A project-level matcher narrows the extension's own adoption policy.

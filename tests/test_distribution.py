@@ -27,7 +27,7 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("include completions/_focus", manifest)
         self.assertIn('zsh_completion.install "completions/_focus", "completions/_work"', formula)
 
-    def test_formula_declares_tmux_and_renders_release_values(self) -> None:
+    def test_formula_leaves_extension_dependencies_optional_and_renders_release_values(self) -> None:
         template = (ROOT / "packaging" / "homebrew" / "focus.rb.in").read_text(encoding="utf-8")
 
         rendered = MODULE.render_formula(
@@ -38,7 +38,7 @@ class DistributionTests(unittest.TestCase):
             release_version="0.1.0",
         )
 
-        self.assertIn('depends_on "tmux"', rendered)
+        self.assertNotIn('depends_on "tmux"', rendered)
         self.assertIn('depends_on "python@3.13"', rendered)
         self.assertIn("depends_on :macos", rendered)
         self.assertIn('sha256 "' + "a" * 64 + '"', rendered)

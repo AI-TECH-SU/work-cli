@@ -29,6 +29,10 @@ class ProjectWindows:
             self._boot_id = match[1]
         return self._boot_id
 
+    def boot_identity(self) -> str:
+        """Return the boot identity shared by window and resource bindings."""
+        return self._boot()
+
     def inventory(self, bundle: str | None = None) -> list[dict]:
         result = self.runner.capture((self.command, "windows", *((bundle,) if bundle else ())))
         if result.returncode:
@@ -144,12 +148,25 @@ class ProjectWindows:
         if not candidates:
             before = {self.identity(row) for row in rows}
             launch()
+            requested_new = True
             deadline = time.monotonic() + 12
             while True:
                 rows = self.inventory(bundle)
                 appeared = [row for row in rows if self.identity(row) not in before]
                 matching = [row for row in appeared if matches(row)]
                 candidates = matching if require_match else (matching or appeared)
+                if not candidates and reuse_existing:
+                    # Bringing an existing window forward can expose AX metadata
+                    # missing from the initial inventory. Reuse only a verified
+                    # binding or unique project match, never an arbitrary old ID.
+                    existing, pending_move = self._existing(
+                        slot, rows, matches, binding_context=binding_context,
+                        allow_unversioned_binding=allow_unversioned_binding,
+                        peer_slots=peer_slots,
+                    )
+                    if existing:
+                        candidates = [existing]
+                        requested_new = pending_move
                 if candidates:
                     break
                 if time.monotonic() >= deadline:
@@ -159,7 +176,6 @@ class ProjectWindows:
                 time.sleep(0.2)
             if len(candidates) != 1:
                 raise WorkError(f"Several {slot} windows appeared; refusing an ambiguous assignment")
-            requested_new = True
         window = candidates[0]
         # Record before moving so a failed move can be retried without duplicates.
         self.remember(slot, window, pending_move=requested_new, binding_context=binding_context)
@@ -167,12 +183,14 @@ class ProjectWindows:
         self.remember(slot, window, binding_context=binding_context)
         print(f"ok  {slot} window is on the project desktop" if self.desktop else f"ok  {slot} window is open")
 
-    def close_on_desktop(self, *, terminals: bool) -> None:
+    def close_on_desktop(self, *, include_bundles: tuple[str, ...] | None = None,
+                         exclude_bundles: tuple[str, ...] = ()) -> None:
         if self.runner.dry_run:
-            print("plan close desktop Terminal windows" if terminals else "plan close desktop application windows")
+            print("plan close selected desktop application windows")
             return
         for window in self.inventory():
-            if window["spaces"] != [self.desktop] or (window["bundle"] == TERMINAL) != terminals:
+            if (window["spaces"] != [self.desktop] or window["bundle"] in exclude_bundles
+                    or (include_bundles is not None and window["bundle"] not in include_bundles)):
                 continue
             result = self.runner.capture((self.command, "close-window", str(window["id"]),
                                           str(window["pid"]), window["bundle"], self.desktop))

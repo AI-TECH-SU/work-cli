@@ -14,6 +14,7 @@ from workspace_manager.models import (
     ChromeConfig,
     CommandConfig,
     ContextConfig,
+    FollowAppConfig,
     ProjectConfig,
     SpaceConfig,
     StartupConfig,
@@ -26,7 +27,6 @@ from workspace_manager.paths import global_config_path, project_config_path, pro
 
 PROJECT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 RESERVED_PROJECT_NAMES = {"boot", "doctor", "edit", "init", "list", "restart", "status", "stop"}
-DEFAULT_TMUX_PATHS = ("/opt/homebrew/bin/tmux", "/usr/local/bin/tmux")
 DEFAULT_DESKTOP_NAMES_PATHS = ("/opt/homebrew/bin/desktop-names", "/usr/local/bin/desktop-names")
 
 
@@ -57,7 +57,7 @@ def default_commands() -> CommandConfig:
         return _discover_command(declaration["name"], tuple(declaration.get("candidates", ())))
 
     return CommandConfig(
-        tmux=_discover_command("tmux", DEFAULT_TMUX_PATHS),
+        tmux=extension_command("tmux"),
         code=extension_command("vscode"),
         chrome=extension_command("chrome"),
         desktop_names=_discover_command("desktop-names", DEFAULT_DESKTOP_NAMES_PATHS),
@@ -212,7 +212,10 @@ def _apps(data: dict[str, Any], root: Path) -> tuple[AppConfig, ...]:
                     f"{section}.extension cannot be combined with {', '.join(sorted(conflicts))}; "
                     "provide extension options instead"
                 )
-            options = validate_options(load_extension(extension), options, root)
+            spec = load_extension(extension)
+            if spec.kind == "session" and {"match_title", "match_document"} & set(item):
+                raise WorkError(f"{section}: window matching fields do not apply to session extensions")
+            options = validate_options(spec, options, root)
             bundle_id = ""
         else:
             if "options" in item:
@@ -274,6 +277,33 @@ def load_commands() -> CommandConfig:
     )
 
 
+def load_follow_apps() -> tuple[FollowAppConfig, ...]:
+    path = global_config_path()
+    if not path.exists():
+        return ()
+    data = _read_toml(path)
+    if data.get("version", 1) != 1:
+        raise WorkError(f"unsupported global configuration version in {path}")
+    entries = data.get("follow_apps", [])
+    if not isinstance(entries, list):
+        raise WorkError("follow_apps must be an array of tables")
+    apps = []
+    names = set()
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) - {"name", "bundle_id", "enabled", "match_title"}:
+            raise WorkError("follow_apps entries accept name, bundle_id, enabled, and match_title only")
+        name = _string(entry, "name")
+        bundle = _string(entry, "bundle_id")
+        if not name or name in names:
+            raise WorkError("follow_apps names must be non-empty and unique")
+        if not bundle or not re.fullmatch(r"[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+", bundle):
+            raise WorkError("follow_apps.bundle_id must be an exact application bundle ID")
+        names.add(name)
+        apps.append(FollowAppConfig(name, bundle, _boolean(entry, "enabled", True),
+                                    _string(entry, "match_title")))
+    return tuple(apps)
+
+
 def load_project(name: str) -> ProjectConfig:
     validate_project_name(name)
     source = project_config_path(name)
@@ -296,6 +326,18 @@ def load_project(name: str) -> ProjectConfig:
     space = _table(data, "space")
     apps = _apps(data, root)
     explicit_extensions = {app.extension for app in apps if app.extension}
+    session_extensions = [app for app in apps if app.extension
+                          and load_extension(app.extension).kind == "session"]
+    tmux_enabled = _boolean(tmux, "enabled", "tmux" in data or "startup" in data or "apps" not in data)
+    if session_extensions:
+        if "startup" in data or ("tmux" in data and tmux_enabled):
+            raise WorkError(
+                "[tmux]/[startup] and [[apps]] session extensions configure the same services; "
+                "move legacy settings into apps.options and remove the legacy tables"
+            )
+        tmux_enabled = False
+    if "startup" in data and not tmux_enabled:
+        raise WorkError("[startup] requires an enabled tmux resource; enable [tmux] or remove [startup]")
     legacy_enabled = {}
     for section, table in (("vscode", vscode), ("chrome", chrome)):
         # Declaring the applications list makes it authoritative. Old projects
@@ -316,8 +358,8 @@ def load_project(name: str) -> ProjectConfig:
         raise WorkError("tmux.session cannot contain '.' or ':'")
     tmux_windows = _tmux_windows(tmux, root)
     presentation = _string(tmux, "presentation", "current")
-    if presentation not in {"current", "windows"}:
-        raise WorkError("tmux.presentation must be 'current' or 'windows'")
+    if presentation not in {"current", "windows", "none"}:
+        raise WorkError("tmux.presentation must be 'current', 'windows', or 'none'")
 
     workspace = _resolve(root, _string(vscode, "workspace"))
     context_path = _resolve(root, _string(context, "path", "PROJECT.md"))
@@ -346,7 +388,8 @@ def load_project(name: str) -> ProjectConfig:
         root=root,
         tmux=TmuxConfig(session=session, windows=tmux_windows, presentation=presentation,
                         launch_mode=_launch_mode(tmux, "tmux"),
-                        reuse_existing=_boolean(tmux, "reuse_existing", True)),
+                        reuse_existing=_boolean(tmux, "reuse_existing", True),
+                        enabled=tmux_enabled),
         vscode=VSCodeConfig(
             enabled=legacy_enabled["vscode"],
             workspace=workspace or root,
@@ -444,10 +487,19 @@ def render_project_config(
         "version = 1",
         f"root = {toml_quote(str(root.resolve()))}",
         "",
-        "[tmux]",
-        f"session = {toml_quote(f'focus-{name}')}",
+        "[[apps]]",
+        'name = "services"',
+        'extension = "tmux"',
         'launch_mode = "window"',
         'reuse_existing = true',
+        "[apps.options]",
+        f"session = {toml_quote(f'focus-{name}')}",
+        'presentation = "current"',
+        'startup_window = "dev"',
+    ]
+    if startup:
+        lines.append(f"startup_command = {toml_quote(startup)}")
+    lines.extend([
         "",
         "[[apps]]",
         'name = "vscode"',
@@ -458,7 +510,7 @@ def render_project_config(
         "[apps.options]",
         f"workspace = {toml_quote(workspace_value)}",
         f"context = {toml_quote(context_value)}",
-    ]
+    ])
     if vscode_profile:
         lines.append(f"profile = {toml_quote(vscode_profile)}")
     lines.extend(
@@ -474,12 +526,8 @@ def render_project_config(
             f"profile = {toml_quote(chrome_profile or 'Default')}",
             f"urls = [{url_list}]",
             "",
-            "[startup]",
         ]
     )
-    if startup:
-        lines.append(f"command = {toml_quote(startup)}")
-    lines.extend(("window = \"dev\"", ""))
     if desktop:
         lines.extend(("[space]", "enabled = true", 'manager = "desktop-names"', 'target = "project"', ""))
     return "\n".join(lines)

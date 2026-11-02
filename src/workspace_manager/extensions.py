@@ -20,7 +20,7 @@ from workspace_manager.paths import config_home, state_home
 
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 _CONTEXT = {"root", "project", "instance_dir", "command", "command_name"}
-_TYPES = {"string", "path", "strings", "paths", "boolean"}
+_TYPES = {"string", "path", "strings", "paths", "boolean", "records"}
 
 
 @dataclass(frozen=True)
@@ -28,6 +28,10 @@ class ExtensionSpec:
     id: str
     bundle_id: str
     data: dict
+
+    @property
+    def kind(self) -> str:
+        return self.data.get("kind", "application")
 
 
 def _error(message: str) -> WorkError:
@@ -83,24 +87,13 @@ def _argv(value, tokens: set[str], inputs: dict, *, depth: int = 0) -> None:
             raise _error("argv entries must be strings, {spread=...}, or {if=..., argv=[...]}")
 
 
-def _validate_spec(data: dict, expected_id: str) -> ExtensionSpec:
-    _keys(data, {"version", "id", "bundle_id", "command", "inputs", "launch", "status", "match",
-                 "detached", "adopt_single_on_desktop", "require_match", "restore_on_fresh_boot",
-                 "reopen_on_restore", "reopen_on_restore_input"}, "root")
-    if type(data.get("version")) is not int or data["version"] != 1:
-        raise _error("version must be 1")
-    if data.get("id") != expected_id:
-        raise _error(f"id must match filename: {expected_id!r}")
-    bundle = _text(data.get("bundle_id"), "bundle_id")
-    _bools(data, ("detached", "adopt_single_on_desktop", "require_match", "restore_on_fresh_boot",
-                  "reopen_on_restore"), "root")
-    inputs = data.get("inputs", {})
+def _validate_inputs(inputs: dict, *, depth: int = 0) -> None:
     if not isinstance(inputs, dict):
         raise _error("inputs must be a table")
     for name, item in inputs.items():
-        if not _NAME.fullmatch(name) or name in _CONTEXT:
+        if not _NAME.fullmatch(name) or (depth == 0 and name in _CONTEXT):
             raise _error(f"invalid or reserved input name: {name!r}")
-        _keys(item, {"type", "default", "required", "must_exist", "path_kind", "schemes"}, f"inputs.{name}")
+        _keys(item, {"type", "default", "required", "must_exist", "path_kind", "schemes", "fields", "choices", "pattern"}, f"inputs.{name}")
         if not isinstance(item.get("type"), str) or item["type"] not in _TYPES:
             raise _error(f"inputs.{name}.type must be one of {', '.join(sorted(_TYPES))}")
         _bools(item, ("required", "must_exist"), f"inputs.{name}")
@@ -114,11 +107,58 @@ def _validate_spec(data: dict, expected_id: str) -> ExtensionSpec:
                 raise _error(f"inputs.{name}.schemes requires a string input and non-empty array")
             for scheme in item["schemes"]:
                 _text(scheme, f"inputs.{name}.schemes")
+        if item["type"] == "records":
+            if depth or not isinstance(item.get("fields"), dict) or not item["fields"]:
+                raise _error(f"inputs.{name}.fields requires scalar record fields")
+            _validate_inputs(item["fields"], depth=depth + 1)
+        elif "fields" in item:
+            raise _error(f"inputs.{name}.fields requires records type")
+        if "choices" in item:
+            if item["type"] != "string" or not isinstance(item["choices"], list) or not item["choices"]:
+                raise _error(f"inputs.{name}.choices requires a non-empty string array")
+            for choice in item["choices"]:
+                _text(choice, f"inputs.{name}.choices")
+        if "pattern" in item:
+            if item["type"] != "string":
+                raise _error(f"inputs.{name}.pattern requires string type")
+            try:
+                re.compile(_text(item["pattern"], f"inputs.{name}.pattern"))
+            except re.error as exc:
+                raise _error(f"inputs.{name}.pattern is invalid") from exc
         if "default" in item:
             values = item["default"] if isinstance(item["default"], list) else [item["default"]]
             for value in values:
                 if isinstance(value, str):
                     _template(value, {"root"})
+
+
+def _validate_install(value: dict) -> None:
+    install = _keys(value, {"manager", "package"}, "install")
+    if install.get("manager") != "homebrew":
+        raise _error("install.manager must be homebrew")
+    package = _text(install.get("package"), "install.package")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_+./@-]*", package):
+        raise _error("install.package must be a package identifier")
+
+
+def _validate_spec(data: dict, expected_id: str) -> ExtensionSpec:
+    if isinstance(data, dict) and data.get("kind") == "session":
+        from workspace_manager.session_extensions import validate_session_spec
+        return validate_session_spec(data, expected_id)
+    _keys(data, {"version", "kind", "id", "bundle_id", "command", "inputs", "launch", "status", "match",
+                 "detached", "adopt_single_on_desktop", "require_match", "restore_on_fresh_boot",
+                 "reopen_on_restore", "reopen_on_restore_input", "install"}, "root")
+    if type(data.get("version")) is not int or data["version"] != 1:
+        raise _error("version must be 1")
+    if data.get("id") != expected_id:
+        raise _error(f"id must match filename: {expected_id!r}")
+    if data.get("kind", "application") != "application":
+        raise _error("kind must be application or session")
+    bundle = _text(data.get("bundle_id"), "bundle_id")
+    _bools(data, ("detached", "adopt_single_on_desktop", "require_match", "restore_on_fresh_boot",
+                  "reopen_on_restore"), "root")
+    inputs = data.get("inputs", {})
+    _validate_inputs(inputs)
     tokens = _CONTEXT | set(inputs)
     command = _keys(data.get("command", {}), {"key", "name", "candidates"}, "command")
     if not command.get("key") and not command.get("name"):
@@ -184,6 +224,8 @@ def _validate_spec(data: dict, expected_id: str) -> ExtensionSpec:
         key = data["reopen_on_restore_input"]
         if not isinstance(key, str) or key not in inputs or inputs[key]["type"] != "boolean":
             raise _error("reopen_on_restore_input must name a boolean input")
+    if "install" in data:
+        _validate_install(data["install"])
     spec = ExtensionSpec(expected_id, bundle, data)
     # Validate default types without requiring optional/required user values yet.
     for key, item in inputs.items():
@@ -211,6 +253,26 @@ def load_extension(extension_id: str) -> ExtensionSpec:
 
 def _option_value(key: str, value, item: dict, root: Path, *, default: bool = False):
     kind = item["type"]
+    if kind == "records":
+        if not isinstance(value, (list, tuple)):
+            raise _error(f"option {key!r} must be an array of records")
+        records = []
+        fields = item["fields"]
+        for row in value:
+            if not isinstance(row, dict) or set(row) - set(fields):
+                raise _error(f"option {key!r} records contain unknown fields or are not tables")
+            record = {}
+            for name, field in fields.items():
+                if name in row and row[name] is not None:
+                    record[name] = _option_value(f"{key}.{name}", row[name], field, root)
+                elif "default" in field:
+                    record[name] = _option_value(f"{key}.{name}", field["default"], field, root, default=True)
+                elif field.get("required"):
+                    raise _error(f"option {key!r} requires field {name!r}")
+                else:
+                    record[name] = None
+            records.append(record)
+        return tuple(records)
     if kind == "boolean":
         if type(value) is not bool:
             raise _error(f"option {key!r} must be true or false")
@@ -230,6 +292,10 @@ def _option_value(key: str, value, item: dict, root: Path, *, default: bool = Fa
             parsed = urlparse(part)
             if parsed.scheme not in item["schemes"] or not parsed.netloc:
                 raise _error(f"option {key!r} requires URL schemes: {', '.join(item['schemes'])}")
+        if "choices" in item and part not in item["choices"]:
+            raise _error(f"option {key!r} must be one of {', '.join(item['choices'])}")
+        if "pattern" in item and not re.fullmatch(item["pattern"], part):
+            raise _error(f"option {key!r} does not match its required pattern")
         result.append(part)
     return tuple(result) if kind in {"strings", "paths"} else result[0]
 
@@ -255,10 +321,35 @@ def validate_options(spec: ExtensionSpec, options: dict, root: Path) -> dict:
             raise _error(f"{spec.id}: required option {key!r} is missing")
         else:
             result[key] = None
+    if spec.kind == "session":
+        from workspace_manager.session_extensions import validate_session_options
+        validate_session_options(spec, result)
     return result
 
 
+def validate_input_paths(spec: ExtensionSpec, options: dict) -> None:
+    def inspect(key: str, item: dict, value) -> None:
+        if value is None:
+            return
+        if item["type"] == "records":
+            for index, row in enumerate(value):
+                for field, declaration in item["fields"].items():
+                    inspect(f"{key}[{index}].{field}", declaration, row[field])
+        elif item.get("must_exist"):
+            values = value if item["type"] == "paths" else (value,)
+            for path in values:
+                if not Path(path).exists():
+                    raise WorkError(f"extension {spec.id!r} {key} path does not exist: {path}")
+                kind = item.get("path_kind", "any")
+                if (kind == "file" and not Path(path).is_file()) or (kind == "directory" and not Path(path).is_dir()):
+                    raise WorkError(f"extension {spec.id!r} {key} path must be a {kind}: {path}")
+    for key, item in spec.data.get("inputs", {}).items():
+        inspect(key, item, options[key])
+
+
 class ResolvedExtension:
+    kind = "application"
+
     def __init__(self, spec: ExtensionSpec, app: AppConfig, project: ProjectConfig, commands: CommandConfig):
         self.spec, self.app, self.project = spec, app, project
         self.options = validate_options(spec, app.options, project.root)
@@ -272,6 +363,7 @@ class ResolvedExtension:
         else:
             executable = shutil.which(declaration["name"]) or next(
                 (part for part in declaration.get("candidates", []) if Path(part).is_file()), declaration["name"])
+        self.executable = executable
         self.context = {**self.options, "root": str(project.root), "project": project.name,
                         "instance_dir": str(directory), "command": executable, "command_name": Path(executable).name}
         self.detached = spec.data.get("detached", False)
@@ -354,15 +446,7 @@ class ResolvedExtension:
                 if predicate == "line_all" else any(value in output for value in values))
 
     def validate_paths(self) -> None:
-        for key, item in self.spec.data.get("inputs", {}).items():
-            if item.get("must_exist") and self.options[key] is not None:
-                values = self.options[key] if item["type"] == "paths" else (self.options[key],)
-                for path in values:
-                    if not Path(path).exists():
-                        raise WorkError(f"extension {self.spec.id!r} {key} path does not exist: {path}")
-                    kind = item.get("path_kind", "any")
-                    if (kind == "file" and not Path(path).is_file()) or (kind == "directory" and not Path(path).is_dir()):
-                        raise WorkError(f"extension {self.spec.id!r} {key} path must be a {kind}: {path}")
+        validate_input_paths(self.spec, self.options)
 
     def _folder_roots(self, workspace: Path, match: dict) -> list[Path]:
         roots = [self.project.root.resolve()]
@@ -416,4 +500,8 @@ class ResolvedExtension:
 
 
 def resolve_extension(app: AppConfig, project: ProjectConfig, commands: CommandConfig) -> ResolvedExtension:
-    return ResolvedExtension(load_extension(app.extension), app, project, commands)
+    spec = load_extension(app.extension)
+    if spec.kind == "session":
+        from workspace_manager.session_extensions import ResolvedSessionExtension
+        return ResolvedSessionExtension(spec, app, project, commands)
+    return ResolvedExtension(spec, app, project, commands)
